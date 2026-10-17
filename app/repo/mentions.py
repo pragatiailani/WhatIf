@@ -43,5 +43,10 @@ def rekey(book_id: str, old_keys: Sequence[str], new_key: str) -> int:
     return result.modified_count
 
 
+def delete_for_chunk(chunk_id: str) -> int:
+    """Drop a chunk's mentions so re-extracting it cannot leave duplicates."""
+    return _col().delete_many({"chunk_id": chunk_id}).deleted_count
+
+
 def delete_mentions(book_id: str) -> int:
     return _col().delete_many({"book_id": book_id}).deleted_count
