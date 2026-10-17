@@ -23,7 +23,7 @@ export default function Library() {
     (tab === "public" ? api.listPublicBooks() : api.listMyBooks()).then(setBooks).catch((e) => (toast(errorText(e), "error"), setBooks([])));
   }, [tab, toast]);
 
-  const genres = useMemo(() => ["All", ...new Set((books ?? []).map((b) => b.genre))], [books]);
+  const genres = useMemo(() => ["All", ...new Set((books ?? []).flatMap((b) => (b.genre ? [b.genre] : [])))], [books]);
   const shown = (books ?? []).filter(
     (b) => (genre === "All" || b.genre === genre) && (b.title + " " + (b.author ?? "")).toLowerCase().includes(q.toLowerCase()),
   );
@@ -70,8 +70,8 @@ export default function Library() {
           ))}
         </div>
       ) : shown.length === 0 ? (
-        tab === "mine" && !q ? (
-          <Empty icon={<BookPlus className="size-12" />} title="No uploads yet">
+        !q ? (
+          <Empty icon={<BookPlus className="size-12" />} title={tab === "public" ? "The shelves are empty" : "No uploads yet"}>
             Bring your own book and we'll map it into a story graph. <Link to="/upload" className="text-gold hover:underline">Upload one →</Link>
           </Empty>
         ) : (
@@ -86,7 +86,7 @@ export default function Library() {
                 <div className="mt-3">
                   <h3 className="font-display text-lg font-semibold leading-tight group-hover:text-gold">{b.title}</h3>
                   <p className="text-sm text-ink-mute">{b.author ?? "Unknown author"}</p>
-                  {b.status !== "ready" ? <IngestBadge book={b} /> : !!b.stats.storylines && <p className="mt-1 text-xs text-sage">{b.stats.storylines} storyline{b.stats.storylines > 1 ? "s" : ""}</p>}
+                  {b.status !== "ready" ? <IngestBadge book={b} /> : <BookStats book={b} />}
                 </div>
               </Link>
             </motion.div>
@@ -97,11 +97,24 @@ export default function Library() {
   );
 }
 
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function BookStats({ book: { stats } }: { book: Book }) {
+  const parts = [
+    stats.pages && plural(stats.pages, "page"),
+    stats.entities && plural(stats.entities, "entity", "entities"),
+    stats.events && plural(stats.events, "event"),
+    stats.storylines && plural(stats.storylines, "storyline"),
+  ].filter(Boolean);
+  return parts.length ? <p className="mt-1 text-xs text-sage">{parts.join(" · ")}</p> : null;
+}
+
 function IngestBadge({ book }: { book: Book }) {
   const [p, setP] = useState<IngestionProgress | null>(null);
   useEffect(() => api.watchIngestion(book.id, setP), [book.id]);
   if (p?.status === "ready") return <div className="mt-1"><Badge tone="sage">ready</Badge></div>;
-  if (p?.status === "failed") return <div className="mt-1"><Badge tone="rose">failed</Badge></div>;
+  if (p?.status === "failed" || (!p && book.status === "failed"))
+    return <div className="mt-1" title={p?.detail ?? book.error ?? undefined}><Badge tone="rose">failed</Badge></div>;
   return (
     <div className="mt-2 space-y-1">
       <Badge tone="amber">{p?.status ?? book.status}…</Badge>

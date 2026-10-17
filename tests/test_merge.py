@@ -243,9 +243,10 @@ def test_verdict_values_are_normalized():
 class FakeLLM:
     """Judge answers `verdict` for every candidate; describer joins the notes."""
 
-    def __init__(self, verdict=("same", 0.9), fail_on=None):
+    def __init__(self, verdict=("same", 0.9), fail_on=None, error="llm down"):
         self.verdict = verdict
         self.fail_on = fail_on
+        self.error = error
         self.calls: list[tuple[str, str]] = []
 
     def with_structured_output(self, schema, **kwargs):
@@ -260,7 +261,7 @@ class _Bound:
         text = messages[1].content
         self.llm.calls.append((self.schema.__name__, text))
         if self.llm.fail_on and self.llm.fail_on in text:
-            raise RuntimeError("llm down")
+            raise RuntimeError(self.llm.error)
         if self.schema is FinalDescriptions:
             keys = re.findall(r"^(\S+) \| ", text, flags=re.M)
             return FinalDescriptions(descriptions=[{"key": k, "description": "final"} for k in keys])
@@ -342,6 +343,15 @@ def test_failed_merge_is_reported_and_resume_skips_finished_nodes(mongo):
     again = _run(llm=FakeLLM(), describe=False)
     assert again.root == (2, 0)
     assert again.skipped == [(1, 0)] and again.merged == [(1, 1), (2, 0)]
+
+
+def test_content_filter_refusal_keeps_pairs_apart_and_finishes(mongo):
+    _store_book([[_entity("Ravi")], [_entity("Ravi Sharma")]])
+    llm = FakeLLM(fail_on="Ravi", error="Azure has not provided the response due to a content filter")
+    report = _run(llm=llm)
+    assert report.root == (1, 0) and not report.failed
+    assert report.blocked_calls == 1  # the judge; one note each needs no description call
+    assert len(graph_levels.get_level_graph("b1", 1, 0).graph.entities) == 2
 
 
 def test_single_page_book_and_missing_pages(mongo):

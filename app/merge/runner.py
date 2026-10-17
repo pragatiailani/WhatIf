@@ -9,6 +9,9 @@ decided in code (`app.merge.candidates`); the rest go to the LLM judge in one ba
 merge (split past `MERGE_MAX_CANDIDATES_PER_CALL` pairs). A merge with nothing ambiguous makes no
 LLM call. A "same" verdict is applied only at `MERGE_MIN_SAME_CONFIDENCE` or above, one-to-one.
 
+A call the provider refuses (content filter) is treated as no answer: the pairs it held stay
+separate and the entities keep their per-page notes.
+
 Every saved node is a checkpoint: a node already in `graph_levels` is loaded instead of rebuilt,
 so a resumed run skips finished subtrees. A failed merge is reported and left unsaved, and
 independent subtrees keep going. Last, the root's entities get final descriptions (batched).
@@ -32,6 +35,7 @@ from app.constants import (
     MERGE_MAX_CANDIDATES_PER_CALL,
     MERGE_MIN_SAME_CONFIDENCE,
 )
+from app.extraction.runner import is_blocked
 from app.extraction.schema import slug
 from app.llm import get_chat_model, get_embeddings
 from app.merge.candidates import Candidates, Vectors, find_candidates, names
@@ -52,6 +56,7 @@ class MergeReport:
     skipped: list[NodeId] = field(default_factory=list)  # already saved by an earlier run
     failed: dict[NodeId, str] = field(default_factory=dict)  # node -> error
     llm_calls: int = 0
+    blocked_calls: int = 0  # refused by the content filter
     same_by_code: int = 0  # entity + event pairs merged without asking the LLM
     same_by_llm: int = 0
     described: int = 0  # root entities given a final description by the LLM in this run
@@ -182,9 +187,16 @@ class _Merger:
         return {key: self.vectors[text] for key, text in texts.items()}
 
     async def _call(self, runnable: Runnable, messages: list[BaseMessage]):
+        """The structured result, or None if the content filter refused the prompt."""
         async with self.limit:
             self.report.llm_calls += 1
-            result = await runnable.ainvoke(messages)
+            try:
+                result = await runnable.ainvoke(messages)
+            except Exception as exc:
+                if not is_blocked(exc):
+                    raise
+                self.report.blocked_calls += 1
+                return None
         if result is None:
             raise ValueError("empty LLM response")
         return result
@@ -215,7 +227,9 @@ class _Merger:
                     [x for x in part if x[0].startswith("V")],
                 )
             )
-        results = await asyncio.gather(*(self._call(self.judge, p) for p in prompts))
+        results = [
+            r for r in await asyncio.gather(*(self._call(self.judge, p) for p in prompts)) if r
+        ]
         entity_verdicts = {v.id: v for r in results for v in r.entities}
         event_verdicts = {v.id: v for r in results for v in r.events}
 
@@ -265,6 +279,8 @@ class _Merger:
 
         async def run(batch: list[dict]) -> None:
             result = await self._call(self.describer, build_description_messages(batch))
+            if result is None:
+                return
             written = {d.key: d.description.strip() for d in result.descriptions}
             for e in batch:
                 if written.get(e["key"]):
@@ -303,9 +319,7 @@ async def amerge_page_graphs(
 
     if embeddings is None:
         embeddings = get_embeddings()
-    merger = _Merger(
-        book_id, n_chunks, llm or get_chat_model(), embeddings or None, concurrency
-    )
+    merger = _Merger(book_id, n_chunks, llm or get_chat_model(), embeddings or None, concurrency)
     root_id = (tree_height(n_chunks), 0)
     try:
         root = await merger.build(*root_id)

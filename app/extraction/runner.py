@@ -3,6 +3,9 @@
 For each page: ask the LLM for a `ChunkExtraction`, ground it against the page text, then save the
 page's mentions and its level-0 graph. The level-0 graph is saved last and doubles as the "done"
 marker, so rerunning skips finished pages and retries only the ones that failed.
+
+A page the provider refuses (content filter) is saved with an empty graph: retrying cannot help, and
+one blocked page must not stop the book from merging.
 """
 
 from collections.abc import Sequence
@@ -25,7 +28,13 @@ class RunReport:
     done: list[int] = field(default_factory=list)  # chunk seqs generated in this run
     skipped: list[int] = field(default_factory=list)  # already had a level-0 graph
     failed: dict[int, str] = field(default_factory=dict)  # chunk seq -> error
+    blocked: list[int] = field(default_factory=list)  # refused by the content filter, saved empty
     dropped: int = 0  # ungrounded or unresolved items discarded across the run
+
+
+def is_blocked(exc: BaseException) -> bool:
+    """The provider refused the prompt (content filter); retrying will not help."""
+    return getattr(exc, "code", None) == "content_filter" or "content filter" in str(exc).lower()
 
 
 def save_page_graph(chunk: Chunk, page: PageGraph) -> None:
@@ -71,6 +80,10 @@ def generate_page_graphs(
             return_exceptions=True,
         )
         for chunk, result in zip(batch, results):
+            if isinstance(result, BaseException) and is_blocked(result):
+                save_page_graph(chunk, build_page_graph(chunk, ChunkExtraction()))
+                report.blocked.append(chunk.seq)
+                continue
             if isinstance(result, BaseException) or result is None:
                 report.failed[chunk.seq] = repr(result) if result is not None else "empty response"
                 continue
