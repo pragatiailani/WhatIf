@@ -265,8 +265,10 @@ def verify_draft(book_id: str, session_id: str) -> dict[str, Any]:
 
 @tool()
 def commit_draft(book_id: str, session_id: str) -> dict[str, Any]:
-    """Make the draft part of the storyline. Refused unless the latest verify_draft passed and
-    nothing changed since. Only call this after the user has agreed to the changes."""
+    """Make the draft part of the storyline and write the new text of every chapter it changed.
+    Refused unless the latest verify_draft passed and nothing changed since. Only call this after
+    the user has agreed to the changes. The result lists chapters_written, chapters_failed and
+    chapters_with_problems."""
     return storyline_tools.commit_draft(book_id, session_id)
 
 

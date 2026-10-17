@@ -6,6 +6,7 @@ writes go through `app.storyline`, which enforces the rules: every queued item d
 passing verification before a commit.
 """
 
+import logging
 from typing import Any
 
 from app.constants import OPEN_ITEMS_PER_CALL, TOOL_MAX_TIMELINE_EVENTS
@@ -16,6 +17,8 @@ from app.repo import chunks, graph, sessions
 from app.repo.models import ChatSession, Storyline, StorylineItem
 from app.storyline import draft, ledger, prose, verify
 from app.storyline.schema import Fact
+
+log = logging.getLogger(__name__)
 
 
 def _session(book_id: str, session_id: str) -> ChatSession:
@@ -172,7 +175,18 @@ def verify_draft(book_id: str, session_id: str) -> dict[str, Any]:
 
 
 def commit_draft(book_id: str, session_id: str) -> dict[str, Any]:
-    return draft.commit(_storyline(book_id, session_id))
+    """Commit the verified draft, then write the new text of every chapter it changed, so the
+    story reads the new way as well as being recorded that way. Writing is best effort: the commit
+    stands if a chapter fails, and that chapter is written the next time it is read."""
+    sl = _storyline(book_id, session_id)
+    out = draft.commit(sl)
+    try:
+        written = prose.write_changed_chapters(draft.fresh(sl.id), get_chat_model())
+    except Exception as exc:  # no model, a database error: the commit still stands
+        log.exception("writing chapters after commit failed storyline=%s", sl.id)
+        written = {"written": [], "failed": {"all": str(exc) or type(exc).__name__}, "unresolved": {}}
+    return {**out, "chapters_written": written["written"], "chapters_failed": written["failed"],
+            "chapters_with_problems": written["unresolved"]}  # fmt: skip
 
 
 def discard_draft(book_id: str, session_id: str) -> dict[str, Any]:

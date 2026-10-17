@@ -257,17 +257,22 @@ def test_publishing_needs_a_committed_storyline_with_every_changed_chapter_writt
         storylines.get_storyline_text(sl.id)
 
     sl_tools.verify_draft(api.book, session.id)
-    sl_tools.commit_draft(api.book, session.id)
-    with pytest.raises(StorylinesUnavailable, match="Chapter 2, Chapter 3"):  # changed, not written yet
-        storylines.get_storyline_text(sl.id)
-
-    sl_tools.generate_passage(api.book, session.id, "Chapter 2")
-    sl_tools.generate_passage(api.book, session.id, "Chapter 3")
-    text = storylines.get_storyline_text(sl.id)
+    sl_tools.commit_draft(api.book, session.id)  # also writes the changed chapters
+    text = storylines.get_storyline_text(sl.id)  # so it can be published straight away
     assert (text.id, text.book_id, text.title, text.diverges_at) == (sl.id, api.book, "Ravi lives", "Chapter 2")
     assert [t for t, _ in text.chapters] == ["Chapter 2", "Chapter 3", "Chapter 4"]  # to the end of the book
     assert "vigil" in text.chapters[0][1] and "vigil" in text.chapters[1][1]  # the written passages
     assert text.chapters[2][1].strip() == "Asha faced Vik."  # chapter 4 is unchanged: the original text
+
+
+def test_a_changed_chapter_with_no_text_blocks_publishing_and_says_which(api, mongo):
+    sl, session = make_branch(api)  # committed, chapters written
+    mongo["storyline_chunks"].delete_many({"chapter": {"$in": ["Chapter 2", "Chapter 3"]}})  # a write that failed
+    with pytest.raises(StorylinesUnavailable, match="Chapter 2, Chapter 3"):
+        storylines.get_storyline_text(sl.id)
+    sl_tools.read_chapter(api.book, "Chapter 2", session.id)  # reading writes it
+    sl_tools.read_chapter(api.book, "Chapter 3", session.id)
+    assert [t for t, _ in storylines.get_storyline_text(sl.id).chapters] == ["Chapter 2", "Chapter 3", "Chapter 4"]
 
 
 def test_a_storyline_that_changes_nothing_publishes_as_the_original_book(api):
@@ -280,10 +285,48 @@ def test_a_storyline_that_changes_nothing_publishes_as_the_original_book(api):
 def test_the_publisher_composes_the_book_before_the_change_with_the_storyline_after_it(api):
     from app import inkitt
 
-    sl, session = make_branch(api)
-    for chapter in ("Chapter 2", "Chapter 3"):
-        sl_tools.generate_passage(api.book, session.id, chapter)
+    sl, session = make_branch(api)  # committing wrote the chapters
     story = inkitt.storyline_story(sl.id)
     assert (story.kind, story.source_id, story.title) == ("storyline", sl.id, "Ravi lives")
     assert [t for t, _ in story.chapters] == ["Chapter 1", "Chapter 2", "Chapter 3", "Chapter 4"]
     assert "Ravi met Asha" in story.chapters[0][1] and "vigil" in story.chapters[1][1]
+
+
+# --- saying "update it" ----------------------------------------------------
+
+
+def test_the_turn_that_commits_shows_the_rewritten_text_in_the_chat(api, scripted):
+    _, h = person()
+    scripted(*EDIT, call("commit_draft", {}, "t7"), AIMessage(content="Done: Ravi survives."))
+    turn = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived? Go ahead."}, headers=h))[-1][1]
+    diff = turn["assistant"]["diff"]
+    assert diff["passage"].startswith("Chapter 2\n\n") and "vigil" in diff["passage"]  # the new text, with its title
+    assert turn["assistant"]["route"] == "edit" and "graph" in turn
+
+
+def test_approving_in_a_later_turn_also_shows_the_text(api, scripted):
+    """Ideate and draft in one turn, say yes in the next: the second turn writes no graph changes,
+    but it writes the chapters, and the reader sees them."""
+    _, h = person()
+    scripted(*EDIT, AIMessage(content="Ready to save; shall I?"))
+    first = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived?"}, headers=h))[-1][1]
+    sl_id = first["storyline"]["id"]
+    assert first["assistant"]["diff"]["passage"] == ""  # nothing is written until the reader says yes
+
+    scripted(call("commit_draft", {}, "t8"), AIMessage(content="Saved."))
+    second = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "yes, update it", "storyline_id": sl_id}, headers=h))[-1][1]
+    diff = second["assistant"]["diff"]
+    assert diff["added"] == [] and diff["hidden"] == []  # no new graph changes in this turn
+    assert diff["passage"].startswith("Chapter 2\n\n") and "vigil" in diff["passage"]
+    assert "graph" in second and second["storyline"]["id"] == sl_id
+
+
+def test_a_long_chapter_is_previewed_not_dumped(api):
+    from app.storyline.diff import PASSAGE_PREVIEW_CHARS, _preview
+    from app.repo.models import StorylineChunk
+
+    passage = StorylineChunk(storyline_id="s", book_id="b", chapter="Chapter 9", text="word " * 2000,
+                             fingerprint="f", op_seq=1, seq_start=0, seq_end=0)  # fmt: skip
+    shown = _preview(passage)
+    assert shown.startswith("Chapter 9\n\n") and shown.endswith("…")
+    assert len(shown) <= len("Chapter 9\n\n") + PASSAGE_PREVIEW_CHARS + 1

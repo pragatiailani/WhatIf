@@ -44,7 +44,7 @@ from app.constants import (
 from app.llm import get_chat_model
 from app.repo import sessions, storylines
 from app.repo.checkpoints import get_checkpointer
-from app.repo.models import Message
+from app.repo.models import Message, utcnow
 from app.storyline.diff import diff_out
 
 NAME = "book_qa"
@@ -290,7 +290,8 @@ async def _stream(
         raise ValueError(f"unknown session '{session_id}' for book '{book_id}'")
     if checkpointer is ...:
         checkpointer = get_checkpointer()
-    started_at = _head_seq(session.storyline_id)  # to tell what this turn changed in a storyline
+    head_before = _head_seq(session.storyline_id)  # with the time, tells what this turn changed
+    turn_started = utcnow()
 
     yield "phase", FIRST_PHASE
     question_msg = HumanMessage(content=question)
@@ -336,7 +337,7 @@ async def _stream(
     # An edit may have bound this chat to a storyline (start_draft creates one): look it up again.
     session = sessions.get_session(session_id) or session
     line = storylines.get_storyline(session.storyline_id) if session.storyline_id else None
-    diff = diff_out(line, started_at) if line else None
+    diff = diff_out(line, head_before, turn_started) if line else None
     user_msg = sessions.add_message(Message(session_id=session_id, role="user", content=question))
     assistant_msg = sessions.add_message(
         Message(session_id=session_id, role="assistant", content=answer, citations=citations,

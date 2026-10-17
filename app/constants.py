@@ -207,3 +207,5 @@ SLOW_QUERY_SECONDS = 1.0  # a graph query slower than this is logged as a warnin
 LOG_VALUE_CHARS = 200  # longest argument value written to a log line
 # Libraries that log a line per request or connection; kept at WARNING unless LOG_LEVEL=DEBUG.
 NOISY_LOGGERS = ("httpx", "httpcore", "openai", "urllib3", "pymongo", "mcp", "asyncio", "watchfiles")
+PROSE_WORKERS = 4  # chapters written at the same time when a storyline is committed
+PASSAGE_PREVIEW_CHARS = 1500  # how much of the first rewritten chapter the reading page shows

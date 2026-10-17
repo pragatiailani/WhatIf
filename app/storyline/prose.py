@@ -7,15 +7,17 @@ checked against the facts and events before it is stored; contradictions found a
 one retry, and any that remain are stored with the passage instead of being hidden.
 """
 
+import contextvars
 import hashlib
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.constants import PROSE_CONTEXT_CHARS, PROSE_MAX_RETRIES, PROSE_SEGMENT_CHARS
+from app.constants import PROSE_CONTEXT_CHARS, PROSE_MAX_RETRIES, PROSE_SEGMENT_CHARS, PROSE_WORKERS
 from app.repo import chunks, graph, storylines
 from app.repo.graph import GraphScope
 from app.repo.models import Chunk, GraphEvent, PageSpan, Storyline, StorylineChunk
@@ -152,3 +154,51 @@ def generate_chapter(
             issues=issues,
         )
     )
+
+
+def changed_chapters(sl: Storyline) -> list[dict[str, Any]]:
+    """The chapters (`chunks.list_chapters` entries) the storyline changes, in book order, that do
+    not have a current passage yet."""
+    out = []
+    for chapter in chunks.list_chapters(sl.book_id):
+        view = ChapterView(sl, chapter["title"])
+        if view.changed and current_passage(sl, view) is None:
+            out.append(chapter)
+    return out
+
+
+def write_changed_chapters(
+    sl: Storyline, llm: BaseChatModel, workers: int | None = None
+) -> dict[str, Any]:
+    """Write the text of every changed chapter that has none yet, a few at a time. One chapter
+    failing does not stop the others: it is reported, and is written the next time it is read.
+
+    Returns {"written": [titles], "failed": {title: error}, "unresolved": {title: [problems]}}
+    where `unresolved` lists problems the check still found in a written chapter.
+    """
+    todo = changed_chapters(sl)
+    result: dict[str, Any] = {"written": [], "failed": {}, "unresolved": {}}
+    if not todo:
+        return result
+    workers = workers or PROSE_WORKERS
+    log.info("writing %d changed chapter(s) storyline=%s workers=%d", len(todo), sl.id, workers)
+
+    def one(chapter: dict[str, Any]) -> tuple[str, StorylineChunk | BaseException]:
+        try:
+            return chapter["title"], generate_chapter(sl, chapter, llm)
+        except Exception as exc:  # reported below, with the chapters that did work
+            log.warning("chapter failed storyline=%s chapter=%s: %r", sl.id, chapter["title"], exc)
+            return chapter["title"], exc
+
+    context = contextvars.copy_context()  # worker threads keep the request id in their log lines
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(todo)))) as pool:
+        outcomes = dict(pool.map(lambda c: context.copy().run(one, c), todo))
+    for chapter in todo:  # report in book order
+        outcome = outcomes[chapter["title"]]
+        if isinstance(outcome, BaseException):
+            result["failed"][chapter["title"]] = str(outcome) or type(outcome).__name__
+            continue
+        result["written"].append(chapter["title"])
+        if outcome.issues:
+            result["unresolved"][chapter["title"]] = outcome.issues
+    return result

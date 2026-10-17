@@ -29,7 +29,7 @@ def _draft(sl: Storyline) -> DraftState:
     return sl.draft
 
 
-def _fresh(storyline_id: str) -> Storyline:
+def fresh(storyline_id: str) -> Storyline:
     sl = storylines.get_storyline(storyline_id)
     if sl is None:
         raise ValueError(f"unknown storyline '{storyline_id}'")
@@ -116,9 +116,9 @@ def start_draft(
             premise=premise, anchor_event=anchor.key, divergence_pos=anchor.story_pos, affected=affected
         ),
     )
-    sl = _fresh(sl.id)
+    sl = fresh(sl.id)
     _set_facts(sl, facts, anchor.story_pos)
-    queued = enqueue(_fresh(sl.id))
+    queued = enqueue(fresh(sl.id))
     log.info("draft started storyline=%s session=%s anchor=%s pos=%s affected=%d facts=%d queued=%d",
              sl.id, session.id, anchor.key, anchor.story_pos, len(affected), len(facts), queued)
     return {
@@ -191,11 +191,11 @@ def resolve_item(
     if facts:
         _set_facts(sl, facts, pos)
 
-    sl = _fresh(sl.id)
+    sl = fresh(sl.id)
     queued = 0
     if affects:
         new = storylines.add_affected(sl.id, [*affects, *(f.entity for f in facts)])
-        queued = enqueue(_fresh(sl.id), new) if new else 0
+        queued = enqueue(fresh(sl.id), new) if new else 0
     storylines.resolve_item(sl.id, ref, action)
     open_left = storylines.count_items(sl.id, "open")
     log.info("resolved storyline=%s ref=%s action=%s new_event=%s facts=%d affects=%d newly_queued=%d open=%d",
@@ -268,5 +268,5 @@ def commit(sl: Storyline) -> dict[str, Any]:
         raise ValueError("there are still open items")
     storylines.mark_committed(sl.id)
     storylines.delete_items(sl.id)
-    log.info("draft committed storyline=%s ops=%d", sl.id, _fresh(sl.id).committed_seq)
-    return {"committed": True, "storyline_id": sl.id, "ops": _fresh(sl.id).committed_seq}
+    log.info("draft committed storyline=%s ops=%d", sl.id, fresh(sl.id).committed_seq)
+    return {"committed": True, "storyline_id": sl.id, "ops": fresh(sl.id).committed_seq}

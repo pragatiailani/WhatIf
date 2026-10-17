@@ -12,6 +12,7 @@ from app.repo import books, chunks, graph, sessions, storylines
 from app.repo.graph import GraphScope
 from app.repo.models import Book, ChatSession, Chunk, GraphEntity, GraphEvent, GraphRelation, PageSpan
 from app.storyline import draft, ledger
+from app.storyline import prose as prose_module
 from app.storyline.schema import Continuity, ContinuityIssue, Fact
 
 RAVI, ASHA, VIK = "ravi|character", "asha|character", "vik|character"
@@ -159,6 +160,7 @@ def world(mongo, monkeypatch):
         monkeypatch.setattr(graph, name, getattr(mem, name))
     judge = FakeJudge()
     monkeypatch.setattr(tools, "get_chat_model", lambda: judge)
+    monkeypatch.setattr(prose_module, "PROSE_WORKERS", 1)  # a predictable order for the fake model
     book = books.create_book(Book(title="Kim", content_hash="h"))
     session = sessions.create_session(ChatSession(book_id=book.id))
     texts = ["Ravi met Asha.", "Vik killed Ravi.", "Asha wept at the funeral of Ravi.", "Asha faced Vik."]
@@ -450,15 +452,74 @@ def test_problems_that_survive_the_retry_are_kept_with_the_passage(world):
     assert out["issues"] == ["still mourns"] and len(world.judge.rewrites) == 2
 
 
-def test_after_commit_reading_a_changed_chapter_generates_it_once(world):
+def test_committing_writes_the_changed_chapters_and_reading_reuses_them(world):
     world.start()
     finish_all(world)
     tools.verify_draft(world.book, world.session)
-    tools.commit_draft(world.book, world.session)
+    out = tools.commit_draft(world.book, world.session)
+    assert out["committed"] and out["chapters_written"] == ["Chapter 2", "Chapter 3"]
+    assert out["chapters_failed"] == {} and out["chapters_with_problems"] == {}
+    assert world.judge.rewrites == ["Chapter 2", "Chapter 3"]  # chapters 1 and 4 did not change
+
     first = tools.read_chapter(world.book, "Chapter 3", world.session)
     assert first["source"] == "storyline" and "vigil" in first["text"] and first["issues"] == []
     again = tools.read_chapter(world.book, "Chapter 3", world.session)
-    assert again["chunk_id"] == first["chunk_id"] and world.judge.rewrites == ["Chapter 3"]
+    assert again["chunk_id"] == first["chunk_id"] and len(world.judge.rewrites) == 2  # nothing rewritten
+    assert tools.read_chapter(world.book, "Chapter 4", world.session)["source"] == "original"
+
+
+def test_one_chapter_failing_does_not_undo_the_commit_and_is_written_when_read(world, monkeypatch):
+    world.start()
+    finish_all(world)
+    tools.verify_draft(world.book, world.session)
+    real = world.judge.invoke
+
+    def flaky(messages):
+        if "Chapter: Chapter 3" in messages[-1].content and messages[0].content.startswith("You rewrite"):
+            raise RuntimeError("model overloaded")
+        return real(messages)
+
+    monkeypatch.setattr(world.judge, "invoke", flaky)
+    out = tools.commit_draft(world.book, world.session)
+    assert out["committed"] and out["chapters_written"] == ["Chapter 2"]
+    assert "overloaded" in out["chapters_failed"]["Chapter 3"]
+    assert world.storyline().draft is None  # the verified change stands
+
+    monkeypatch.setattr(world.judge, "invoke", real)
+    assert tools.read_chapter(world.book, "Chapter 3", world.session)["source"] == "storyline"  # written now
+
+
+def test_no_model_at_commit_time_still_commits(world, monkeypatch):
+    world.start()
+    finish_all(world)
+    tools.verify_draft(world.book, world.session)
+    monkeypatch.setattr(tools, "get_chat_model", lambda: (_ for _ in ()).throw(RuntimeError("no LLM key")))
+    out = tools.commit_draft(world.book, world.session)
+    assert out["committed"] and out["chapters_written"] == [] and "no LLM key" in out["chapters_failed"]["all"]
+    assert world.storyline().draft is None
+
+
+def test_problems_the_check_still_finds_are_reported_by_the_commit(world):
+    world.start()
+    finish_all(world)
+    tools.verify_draft(world.book, world.session)
+    world.judge.prose_issues = [["still mourns"], ["still mourns"]]  # chapter 2: both tries
+    out = tools.commit_draft(world.book, world.session)
+    assert out["chapters_with_problems"] == {"Chapter 2": ["still mourns"]}
+    assert out["chapters_written"] == ["Chapter 2", "Chapter 3"]
+
+
+def test_chapters_are_written_in_parallel_without_losing_any(world, monkeypatch):
+    world.start()
+    finish_all(world)
+    tools.verify_draft(world.book, world.session)
+    storylines.mark_committed(world.storyline().id)  # commit the graph only, as draft.commit does
+    storylines.set_draft(world.storyline().id, None)
+    result = prose_module.write_changed_chapters(world.storyline(), world.judge, workers=4)
+    assert sorted(result["written"]) == ["Chapter 2", "Chapter 3"] and result["failed"] == {}
+    assert prose_module.changed_chapters(world.storyline()) == []  # nothing left to write
+    assert prose_module.write_changed_chapters(world.storyline(), world.judge) == {
+        "written": [], "failed": {}, "unresolved": {}}  # a second run has nothing to do
 
 
 def test_editing_a_chapter_again_makes_its_passage_stale(world):
