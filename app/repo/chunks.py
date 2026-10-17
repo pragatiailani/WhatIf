@@ -1,3 +1,4 @@
+import re
 from collections.abc import Sequence
 
 from pymongo import ASCENDING
@@ -50,3 +51,43 @@ def count_chunks(book_id: str) -> int:
 
 def delete_chunks(book_id: str) -> int:
     return _col().delete_many({"book_id": book_id}).deleted_count
+
+
+def search(
+    book_id: str, terms: Sequence[str], chapter: str | None = None, limit: int = 300
+) -> list[Chunk]:
+    """Chunks containing at least one of `terms` (case-insensitive, literal), optionally limited to
+    a chapter title. Unranked: the caller scores them. Capped at `limit` chunks."""
+    if not terms:
+        return []
+    query: dict = {
+        "book_id": book_id,
+        "$or": [{"text": {"$regex": re.escape(t), "$options": "i"}} for t in terms],
+    }
+    if chapter is not None:
+        query["chapter"] = chapter
+    return [Chunk.model_validate(d) for d in _col().find(query).sort("seq", ASCENDING).limit(limit)]
+
+
+def list_chapters(book_id: str) -> list[dict]:
+    """Chapters in book order: {title, seq_start, seq_end, page_start, page_end}."""
+    chapters: dict[str, dict] = {}
+    for c in list_chunks(book_id):
+        if c.chapter is None:
+            continue
+        pages = [s.page for s in c.page_spans]
+        info = chapters.setdefault(
+            c.chapter,
+            {"title": c.chapter, "seq_start": c.seq, "seq_end": c.seq, "page_start": None, "page_end": None},
+        )
+        info["seq_end"] = c.seq
+        if pages:
+            info["page_start"] = min(pages + ([info["page_start"]] if info["page_start"] else []))
+            info["page_end"] = max(pages + ([info["page_end"]] if info["page_end"] else []))
+    return list(chapters.values())
+
+
+def ids_by_seq(book_id: str, seqs: Sequence[int]) -> dict[int, str]:
+    """Chunk id for each seq that exists."""
+    docs = _col().find({"book_id": book_id, "seq": {"$in": list(seqs)}}, projection=["seq"])
+    return {d["seq"]: d["_id"] for d in docs}

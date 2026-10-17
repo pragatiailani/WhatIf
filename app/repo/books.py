@@ -53,3 +53,10 @@ def update_stats(book_id: str, stats: dict[str, int]) -> None:
     """Merge `stats` into the book's stats (existing keys are overwritten)."""
     fields = {f"stats.{k}": v for k, v in stats.items()}
     _col().update_one({"_id": book_id}, {"$set": {**fields, "updated_at": utcnow()}})
+
+
+def list_books(owner_id: str | None = None) -> list[Book]:
+    """Catalog books (no owner) plus, if given, the books owned by `owner_id`, newest first."""
+    owners = [None, owner_id] if owner_id else [None]
+    cursor = _col().find({"owner_id": {"$in": owners}}).sort("created_at", -1)
+    return [Book.model_validate(d) for d in cursor]

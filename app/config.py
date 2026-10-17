@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.constants import (
     DEFAULT_AZURE_LLM_API_VERSION,
     DEFAULT_AZURE_LLM_MODEL,
+    DEFAULT_CHAT_HISTORY_BUDGET,
     DEFAULT_EXTRACTION_BATCH_SIZE,
     DEFAULT_MERGE_CONCURRENCY,
 )
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
 
     falkor_host: str = "localhost"
     falkor_port: int = 6379
-    falkor_password: str
+    falkor_password: str | None = None
 
     auth_secret: str  # signs sign-in tokens
 
@@ -40,6 +41,9 @@ class Settings(BaseSettings):
 
     extraction_batch_size: int = DEFAULT_EXTRACTION_BATCH_SIZE
     merge_concurrency: int = DEFAULT_MERGE_CONCURRENCY
+
+    chat_history_budget: int = DEFAULT_CHAT_HISTORY_BUDGET
+    mcp_server_url: str = ""  # streamable-http URL of the tool server; empty runs it over stdio
 
 
 @lru_cache
