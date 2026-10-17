@@ -204,3 +204,28 @@ def test_force_regenerates_without_duplicate_mentions(mongo):
 def test_invalid_batch_size(mongo):
     with pytest.raises(ValueError):
         generate_page_graphs("b1", llm=FakeLLM(), batch_size=-1)
+
+
+def test_entities_named_in_a_summary_are_linked_to_the_event():
+    text = "Clover began to sing Beasts of England in the barn."
+    extraction = ChunkExtraction(
+        entities=[
+            ExtractedEntity(name="Clover", type="Character", description="A mare.", evidence="Clover began"),
+            ExtractedEntity(name="Beasts of England", type="Concept", description="A song.", evidence="Beasts of England"),
+            ExtractedEntity(name="barn", type="Place", description="A barn.", evidence="in the barn"),
+            ExtractedEntity(name="Eng", type="Concept", description="Not a whole word.", evidence="England"),
+        ],
+        events=[
+            ExtractedEvent(
+                summary="Clover sings Beasts of England in the barn",
+                participants=[EventParticipant(name="Clover", role="actor")],
+                place="barn",
+                evidence="Clover began to sing",
+            )
+        ],
+    )
+    (event,) = build_page_graph(_chunk(text=text), extraction).graph.events
+    assert event["participants"] == [
+        {"key": "clover|character", "role": "actor"},
+        {"key": "beasts_of_england|concept", "role": "other"},
+    ]  # the place stays an AT edge; "Eng" is not a whole-word match

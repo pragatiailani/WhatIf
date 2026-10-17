@@ -3,6 +3,10 @@
 Every item must have an evidence quote found in the page (`locate_quote`). Items that cannot be
 grounded, and references to entities that were dropped or never extracted, are discarded and
 counted in `PageGraph.dropped`.
+
+An entity named in an event's summary is linked to that event (role "other") even when the LLM left
+it out of the participants: models tend to list only the characters, which leaves the objects,
+places and concepts an event is about with no edges.
 """
 
 from dataclasses import dataclass
@@ -106,6 +110,12 @@ def build_page_graph(chunk: Chunk, extraction: ChunkExtraction) -> PageGraph:
         place = resolve(item.place)
         if item.place and place is None:
             dropped += 1
+        linked = {p["key"] for p in participants} | {place}
+        summary = f"_{slug(item.summary)}_"
+        for name, entity in by_name.items():
+            if entity not in linked and f"_{name}_" in summary:
+                participants.append({"key": entity, "role": "other"})
+                linked.add(entity)
         events.append(
             {
                 "key": key,
