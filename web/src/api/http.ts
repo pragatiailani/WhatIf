@@ -1,10 +1,10 @@
 // HTTP implementation of `Api`, the contract the FastAPI routes should satisfy.
-// Chat and ingestion progress stream as Server-Sent Events.
+// Chat and ingestion progress stream as Server-Sent Events. `VITE_API_URL` is the server.
 
 import type { Api, ChatEvent } from "./client";
 import type { ChatTurn, IngestionProgress } from "./types";
 
-const BASE = "/api";
+const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const TOKEN_KEY = "whatif.token";
 
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -15,7 +15,9 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(BASE + path, { ...init, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail ?? `${res.status} ${res.statusText}`);
+    // FastAPI sends a string, or a list of field errors for invalid input.
+    const detail = Array.isArray(body.detail) ? body.detail.map((d: { msg: string }) => d.msg).join("; ") : body.detail;
+    throw new Error(detail ?? `${res.status} ${res.statusText}`);
   }
   return res.json();
 }

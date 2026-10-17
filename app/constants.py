@@ -2,10 +2,17 @@
 
 # --- Mongo collections ---------------------------------------------------
 
+USERS_COLLECTION = "users"
 BOOKS_COLLECTION = "books"
 CHUNKS_COLLECTION = "chunks"
 MENTIONS_COLLECTION = "mentions"
 GRAPH_LEVELS_COLLECTION = "graph_levels"
+
+# --- Auth ----------------------------------------------------------------
+
+# How long a sign-in token stays valid.
+AUTH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
+MIN_PASSWORD_LENGTH = 8
 
 # --- LLM -----------------------------------------------------------------
 
@@ -38,6 +45,8 @@ STRUCTURAL_RELS = frozenset({"INVOLVES", "AT", "BEFORE", "CAUSES", "IN_CHAPTER",
 
 # Pages sent to the LLM at the same time during per-page graph generation.
 DEFAULT_EXTRACTION_BATCH_SIZE = 10
+# Extraction passes per ingestion; each pass retries only the pages that failed (rate limits etc.).
+EXTRACTION_ATTEMPTS = 3
 
 # Minimum fraction of an evidence quote that must be found in the chunk to accept the match.
 MIN_QUOTE_MATCH = 0.8

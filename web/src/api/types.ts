@@ -32,10 +32,10 @@ export interface Book {
   visibility: Visibility;
   status: BookStatus;
   error: string | null;
-  blurb: string;
-  genre: string;
+  blurb?: string;
+  genre?: string;
   cover_hue: number; // drives the generated cover art
-  stats: { chapters?: number; pages?: number; entities?: number; events?: number; storylines?: number };
+  stats: { chapters?: number; pages?: number; chunks?: number; entities?: number; events?: number; relations?: number; storylines?: number };
   created_at: string;
 }
 

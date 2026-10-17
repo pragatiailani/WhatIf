@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,8 +12,12 @@ from app.constants import (
 )
 
 
+# Project root `.env`, so settings load whatever the working directory is.
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
     # Credentials have no defaults: they must come from the env / .env.
     mongo_uri: str
@@ -21,6 +26,8 @@ class Settings(BaseSettings):
     falkor_host: str = "localhost"
     falkor_port: int = 6379
     falkor_password: str | None = None
+
+    auth_secret: str  # signs sign-in tokens
 
     server_host: str = "127.0.0.1"
     server_port: int = 8000

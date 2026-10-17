@@ -89,3 +89,64 @@ def test_keys():
 
 def test_chunk_extraction_defaults_empty():
     assert ChunkExtraction().model_dump() == {"entities": [], "events": [], "relations": []}
+
+
+# --- runner ----------------------------------------------------------------------------------
+
+
+class _FakeExtractor:
+    """Answers each page by its text: "blocked" -> content filter, "down" -> outage, else empty."""
+
+    def with_structured_output(self, *_, **__):
+        return self
+
+    def batch(self, inputs, config=None, return_exceptions=False):
+        def answer(messages):
+            text = messages[-1].content
+            if "blocked" in text:
+                return ValueError("Azure has not provided the response due to a content filter")
+            if "down" in text:
+                return RuntimeError("rate limited")
+            return ChunkExtraction()
+
+        return [answer(m) for m in inputs]
+
+
+def test_runner_saves_blocked_pages_empty_and_reports_failures(mongo):
+    from app.extraction.runner import generate_page_graphs
+    from app.repo import chunks, graph_levels
+
+    texts = ["a calm page", "a blocked page", "the service is down"]
+    chunks.insert_chunks([Chunk(book_id="b1", seq=i, text=t) for i, t in enumerate(texts)])
+    report = generate_page_graphs("b1", llm=_FakeExtractor())
+
+    assert report.done == [0] and report.blocked == [1] and list(report.failed) == [2]
+    assert "rate limited" in report.failed[2]
+    assert graph_levels.get_level_graph("b1", 0, 1).graph.entities == []  # saved, so merge can run
+    assert graph_levels.get_level_graph("b1", 0, 2) is None
+
+
+def test_lenient_parsing_normalizes_near_misses_and_drops_invalid_items():
+    ev = "Ravi walked"
+    raw = {
+        "entities": [
+            {"name": "Ravi", "type": "character", "description": "d", "evidence": ev},
+            {"name": "Delhi", "type": "Location", "description": "d", "evidence": ev},
+            {"name": "The departure", "type": "Event", "description": "d", "evidence": ev},
+            {"name": "No evidence", "type": "Character", "description": "d"},
+        ],
+        "events": [
+            {"summary": "s", "participants": [{"name": "Delhi", "role": "place"}], "evidence": ev}
+        ],
+    }
+    out = ChunkExtraction.model_validate(raw)
+    assert [(e.name, e.type) for e in out.entities] == [("Ravi", "Character"), ("Delhi", "Place")]
+    assert out.events[0].participants[0].role == "other"
+    assert out.invalid == 2
+    assert ChunkExtraction().invalid == 0
+
+
+def test_llm_still_sees_the_allowed_values():
+    defs = ChunkExtraction.model_json_schema()["$defs"]
+    assert defs["ExtractedEntity"]["properties"]["type"]["enum"] == list(ENTITY_TYPES)
+    assert set(defs["EventParticipant"]["properties"]["role"]["enum"]) == {"actor", "target", "witness", "other"}

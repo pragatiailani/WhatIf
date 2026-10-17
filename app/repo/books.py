@@ -1,8 +1,8 @@
-from pymongo import ASCENDING
+from pymongo import ASCENDING, DESCENDING
 
 from app.constants import BOOKS_COLLECTION
 from app.repo._mongo import collection
-from app.repo.models import Book, BookStatus, utcnow
+from app.repo.models import Book, BookStatus, Visibility, utcnow
 
 
 def _col():
@@ -12,6 +12,7 @@ def _col():
 def ensure_indexes() -> None:
     _col().create_index([("content_hash", ASCENDING)])
     _col().create_index([("owner_id", ASCENDING)])
+    _col().create_index([("visibility", ASCENDING), ("created_at", DESCENDING)])
 
 
 def create_book(book: Book) -> Book:
@@ -22,6 +23,18 @@ def create_book(book: Book) -> Book:
 def get_book(book_id: str) -> Book | None:
     doc = _col().find_one({"_id": book_id})
     return Book.model_validate(doc) if doc else None
+
+
+def list_books(visibility: Visibility) -> list[Book]:
+    """Books with `visibility`, newest first."""
+    cursor = _col().find({"visibility": visibility}).sort("created_at", DESCENDING)
+    return [Book.model_validate(d) for d in cursor]
+
+
+def list_owned_books(owner_id: str) -> list[Book]:
+    """Books uploaded by `owner_id`, newest first."""
+    cursor = _col().find({"owner_id": owner_id}).sort("created_at", DESCENDING)
+    return [Book.model_validate(d) for d in cursor]
 
 
 def find_by_content_hash(content_hash: str, owner_id: str | None = None) -> Book | None:

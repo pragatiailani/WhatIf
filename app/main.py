@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat
+from app import repo
+from app.api import chat, auth, books
 
 log = logging.getLogger(__name__)
 
@@ -21,10 +22,10 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    lifespan=lifespan,
     title="WhatIf?",
     description="A chatbot that turns a book into a knowledge graph with customizable storylines",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -52,6 +53,8 @@ async def health():
 
 
 app.include_router(chat.router)
+app.include_router(auth.router)
+app.include_router(books.router)
 
 
 if __name__ == "__main__":

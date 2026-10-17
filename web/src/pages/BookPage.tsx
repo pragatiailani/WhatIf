@@ -60,13 +60,13 @@ export default function BookPage() {
         </motion.div>
         <div>
           <div className="mb-3 flex flex-wrap gap-1.5">
-            <Badge tone="mute">{book.genre}</Badge>
+            {book.genre && <Badge tone="mute">{book.genre}</Badge>}
             {book.visibility === "private" && <Badge tone="mute">private upload</Badge>}
             {book.status !== "ready" && <Badge tone="amber">{book.status}</Badge>}
           </div>
           <h1 className="font-display text-5xl font-semibold leading-tight">{book.title}</h1>
           {book.author && <p className="mt-1 font-display text-xl italic text-ink-soft">{book.author}</p>}
-          <p className="mt-5 max-w-2xl font-serif text-lg leading-relaxed text-ink-soft">{book.blurb}</p>
+          {book.blurb && <p className="mt-5 max-w-2xl font-serif text-lg leading-relaxed text-ink-soft">{book.blurb}</p>}
           <dl className="mt-6 flex flex-wrap gap-x-8 gap-y-3 text-sm">
             {[["chapters", book.stats.chapters], ["pages", book.stats.pages], ["characters & places", book.stats.entities], ["events", book.stats.events]].filter(([, v]) => v).map(([k, v]) => (
               <div key={k as string}>
