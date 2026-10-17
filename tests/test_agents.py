@@ -95,7 +95,8 @@ async def test_answers_with_citations_and_saves_messages(env):
 
     assert out["answer"].startswith("He left because of a debt")
     assert out["citations"] == [{"chunk_id": "c1", "chapter": "Chapter 1", "page_start": 3,
-                                 "page_end": 3, "seq": 0}]
+                                 "page_end": 3, "seq": 0,
+                                 "quote": "Ravi left Delhi because of the debt."}]
     assert seen_book_ids == ["book1"]  # the model's book_id was replaced
     stored = sessions.last_messages(s.id, 10)
     assert [m.role for m in stored] == ["user", "assistant"]
@@ -164,3 +165,44 @@ async def test_open_tools_over_stdio_hides_ids(env):
     assert "get_history" not in by_name and "find_entities" in by_name
     for tool in tools:
         assert not {"book_id", "session_id"} & set(tool.args_schema["properties"])
+
+
+async def test_stream_yields_phases_tokens_and_done(env):
+    s = new_session()
+    llm = fake(
+        call("get_chunks", {"chunk_ids": ["c1"]}, "t1"),
+        AIMessage(content="Because of a debt (Chapter 1, p. 3)."),
+    )
+    events = [e async for e in book_qa.stream("book1", s.id, "Why?", llm=llm, checkpointer=None)]
+
+    kinds = [k for k, _ in events]
+    assert kinds[0] == "phase" and kinds[-1] == "done"
+    assert ("phase", "Reading the passages…") in events  # the tool call, labelled
+    assert "".join(v for k, v in events if k == "token") == "Because of a debt (Chapter 1, p. 3)."
+    done = events[-1][1]
+    assert done["answer"] == "Because of a debt (Chapter 1, p. 3)."
+    assert done["assistant_message"].citations == done["citations"]
+    assert done["user_message"].content == "Why?"
+
+
+def test_graph_refs_from_tool_results():
+    from langchain_core.messages import ToolMessage
+
+    retrieved = json.dumps({
+        "entities": [{"key": "ravi"}],
+        "relations": [{"id": "r1", "src_key": "ravi", "dst_key": "asha"}],
+        "communities": [{"cid": 2}], "passages": [],
+    })
+    neighbors = json.dumps({"entity": {"key": "asha"}, "neighbors": [{"entity": {"key": "meera"}}]})
+    turn = [
+        call("retrieve", {"query": "q"}, "t1"),
+        ToolMessage(content=retrieved, name="retrieve", tool_call_id="t1"),
+        call("get_neighbors", {"entity": "asha"}, "t2"),
+        ToolMessage(content=neighbors, name="get_neighbors", tool_call_id="t2"),
+        ToolMessage(content="boom", name="find_entities", tool_call_id="t3", status="error"),
+        AIMessage(content="done"),
+    ]
+    _, _, trace, refs = book_qa.read_turn(turn)
+    assert refs == {"seeds": ["ravi", "asha"], "expanded": ["ravi", "asha", "meera"],
+                    "edges": ["r1"], "communities": [2]}
+    assert trace[-1]["error"] is True

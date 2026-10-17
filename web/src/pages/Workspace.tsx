@@ -81,7 +81,7 @@ export default function Workspace() {
           setPending((p) => p && (e.type === "phase" ? { ...p, phase: e.label } : { ...p, text: p.text + e.text })),
         );
         setMessages((m) => [...(m ?? []), turn.user, turn.assistant]);
-        setGraph(turn.graph);
+        if (turn.graph) setGraph(turn.graph);
         setActive(turn.assistant.id);
         if (turn.actions?.includes("inkitt_token_required")) setInkittRetry(text);
         if (turn.storyline && !sid) {
@@ -494,7 +494,7 @@ function Citations({ items }: { items: Citation[] }) {
         {items.map((c, i) => (
           <button key={i} onClick={(e) => (e.stopPropagation(), setOpen(open === i ? null : i))}
             className={`rounded-md border px-2 py-0.5 text-[11px] transition ${open === i ? "border-gold/50 bg-gold-soft text-gold" : c.storyline_chunk ? "border-sage/30 text-sage" : "border-line text-ink-mute hover:text-ink"}`}>
-            {c.storyline_chunk ? "✦ storyline" : `${c.chapter ?? ""}${c.page ? ` · p. ${c.page}` : ""}`}
+            {c.storyline_chunk ? "✦ storyline" : [c.chapter, c.page && `p. ${c.page}`].filter(Boolean).join(" · ")}
           </button>
         ))}
       </div>

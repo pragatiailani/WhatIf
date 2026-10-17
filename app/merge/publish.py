@@ -9,7 +9,7 @@ from app.repo import chunks, graph, graph_levels
 from app.repo.models import GraphEntity, GraphEvent, GraphLevel, GraphRelation
 
 
-def _root(book_id: str) -> GraphLevel:
+def root_level(book_id: str) -> GraphLevel:
     top = graph_levels.max_level(book_id)
     root = graph_levels.get_level_graph(book_id, top, 0) if top else None
     n_chunks = chunks.count_chunks(book_id)
@@ -18,7 +18,7 @@ def _root(book_id: str) -> GraphLevel:
     return root
 
 
-def _description(entity: dict) -> str:
+def entity_description(entity: dict) -> str:
     if entity.get("description"):
         return entity["description"]
     return " ".join(n["text"] for n in entity.get("descriptions", []))
@@ -26,14 +26,14 @@ def _description(entity: dict) -> str:
 
 def publish_book_graph(book_id: str) -> dict[str, int]:
     """Load the merged graph into FalkorDB. Returns counts of what was written."""
-    g = _root(book_id).graph
+    g = root_level(book_id).graph
     entities = [
         GraphEntity(
             key=e["key"],
             name=e["name"],
             type=e["type"],
             aliases=e["aliases"],
-            description=_description(e),
+            description=entity_description(e),
             first_page=e["first_page"],
             last_page=e["last_page"],
             mention_count=e["mention_count"],

@@ -1,10 +1,15 @@
-"""Ingestion pipeline: parsed PDF -> chunks -> page graphs -> merged graph -> FalkorDB.
+"""Ingestion pipeline: parsed PDF -> chunks -> page graphs -> merged graph -> FalkorDB ->
+communities -> embeddings.
 
 Runs in the background after an upload. Every step is resumable: chunks are written once, finished
 page graphs and merge nodes are skipped, and publish replaces the canon graph. So rerunning a
 failed book picks up where it stopped.
 """
 
+import logging
+
+from app import retrieval
+from app.communities import build_communities
 from app.constants import EXTRACTION_ATTEMPTS, MERGE_ATTEMPTS
 from app.extraction.runner import generate_page_graphs
 from app.merge.publish import publish_book_graph
@@ -14,12 +19,14 @@ from app.repo.models import Book
 from app.repo.service.chunking import chunk_book
 from app.repo.service.parsing import ParsedBook
 
+log = logging.getLogger(__name__)
+
 _DETAIL = {
     "queued": "Waiting to start…",
     "parsing": "Reading the pages…",
     "extracting": "Finding characters, places and events…",
     "merging": "Weaving page graphs into one story…",
-    "indexing": "Writing the story graph…",
+    "indexing": "Writing the story graph and its summaries…",
     "ready": "The story graph is ready.",
 }
 
@@ -81,6 +88,14 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
 
         books.set_status(book_id, "indexing")
         books.update_stats(book_id, publish_book_graph(book_id))
+        try:
+            books.update_stats(book_id, build_communities(book_id))
+        except Exception:  # big-picture questions fall back to chapters and the graph
+            log.exception("building communities for book %s failed", book_id)
+        try:
+            books.update_stats(book_id, retrieval.index_book(book_id))
+        except Exception:  # the book still works with keyword search; re-index it later
+            log.exception("embedding book %s failed; it has keyword search only", book_id)
         books.set_status(book_id, "ready")
     except Exception as exc:
         books.set_status(book_id, "failed", repr(exc))

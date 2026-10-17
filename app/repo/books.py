@@ -71,3 +71,8 @@ def list_books(owner_id: str | None = None) -> list[Book]:
     owners = [None, owner_id] if owner_id else [None]
     cursor = _col().find({"owner_id": {"$in": owners}}).sort("created_at", -1)
     return [Book.model_validate(d) for d in cursor]
+
+
+def list_all() -> list[Book]:
+    """Every book, catalog and uploads, newest first (for maintenance scripts)."""
+    return [Book.model_validate(d) for d in _col().find().sort("created_at", -1)]

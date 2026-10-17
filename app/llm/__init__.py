@@ -49,5 +49,6 @@ def get_embeddings() -> Embeddings | None:
         api_key=settings.azure_openai_llm_key,
         api_version=settings.azure_llm_api_version,
         azure_deployment=settings.azure_embedding_model,
+        dimensions=settings.azure_embedding_dimensions or None,
         max_retries=3,
     )

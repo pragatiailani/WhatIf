@@ -9,9 +9,22 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from app.mcp_server import graph_tools, session_tools, text_tools
+from app.mcp_server import graph_tools, rag_tools, session_tools, text_tools
 
 mcp = FastMCP("whatif")
+
+
+# --- retrieval -----------------------------------------------------------
+
+
+@mcp.tool()
+def retrieve(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
+    """Start here for most questions. Finds what the book says about `query` (usually the user's
+    question) in one call: the entities it is about, matched by name and by meaning; how they are
+    related in the graph and the communities they belong to; the closest events; and the best
+    passages (with chunk ids, chapter and page) by keyword, meaning and graph mentions. Use the
+    other tools to dig further."""
+    return rag_tools.retrieve(book_id, query, limit)
 
 
 # --- graph tools ---------------------------------------------------------
@@ -19,8 +32,9 @@ mcp = FastMCP("whatif")
 
 @mcp.tool()
 def find_entities(book_id: str, text: str, limit: int = 10) -> dict[str, Any]:
-    """Find characters, places, objects etc. mentioned in `text` (usually the user's question),
-    by name and alias. Start here to get entity keys; other tools accept a key or a name."""
+    """Find characters, places, objects etc. mentioned in `text`, by name and alias; when no
+    name matches, the entities closest in meaning (e.g. "the old sailor"). Gives entity keys;
+    other tools accept a key or a name."""
     return graph_tools.find_entities(book_id, text, limit)
 
 
@@ -49,7 +63,8 @@ def get_relations(
 
 @mcp.tool()
 def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
-    """Topic clusters of the book most relevant to `query`, with their summaries. Use for
+    """Summaries of the book's groups of connected characters, places and things most relevant
+    to `query`, by keyword and meaning; level 1 is an overview of the whole book. Use for
     big-picture questions (themes, factions, overall plot) rather than specific facts."""
     return graph_tools.search_communities(book_id, query, limit)
 
@@ -68,8 +83,9 @@ def get_chunks(book_id: str, chunk_ids: list[str]) -> dict[str, Any]:
 def search_chunks(
     book_id: str, query: str, chapter: str | None = None, limit: int = 5
 ) -> dict[str, Any]:
-    """Keyword search over the book text, optionally within one chapter. Returns excerpts with
-    chunk ids. Use when the graph has no answer; call get_chunks for the full passage."""
+    """Search the book text by keyword and by meaning, optionally within one chapter. Returns
+    excerpts with chunk ids; `match` says how each was found. Use when the graph has no answer;
+    call get_chunks for the full passage."""
     return text_tools.search_chunks(book_id, query, chapter, limit)
 
 

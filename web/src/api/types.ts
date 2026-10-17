@@ -175,8 +175,8 @@ export interface Message {
 export interface ChatTurn {
   user: Message;
   assistant: Message;
-  /** graph after the turn; changed only by edits */
-  graph: StoryGraph;
+  /** graph after the turn; sent only when the turn changed it (storyline edits) */
+  graph?: StoryGraph;
   /** null when chatting with canon; a new storyline when an edit is made from canon */
   storyline: Storyline | null;
   /** things the UI should do after the turn, e.g. ask for the user's Inkitt token */

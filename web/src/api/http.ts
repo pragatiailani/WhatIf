@@ -13,13 +13,16 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const res = await fetch(BASE + path, { ...init, headers });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    // FastAPI sends a string, or a list of field errors for invalid input.
-    const detail = Array.isArray(body.detail) ? body.detail.map((d: { msg: string }) => d.msg).join("; ") : body.detail;
-    throw new Error(detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await errorFrom(res);
   return res.json();
+}
+
+/** The server's reason for a failed request. */
+async function errorFrom(res: Response): Promise<Error> {
+  const body = await res.json().catch(() => ({}));
+  // FastAPI sends a string, or a list of field errors for invalid input.
+  const detail = Array.isArray(body.detail) ? body.detail.map((d: { msg: string }) => d.msg).join("; ") : body.detail;
+  return new Error(detail ?? `${res.status} ${res.statusText}`);
 }
 
 const json = (method: string, body?: unknown): RequestInit => ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -96,7 +99,7 @@ export const httpApi: Api = {
       headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify({ storyline_id: sid, text }),
     });
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.ok) throw await errorFrom(res);
     let turn: ChatTurn | null = null;
     await readSse(res, (event, data) => {
       if (event === "phase" || event === "token") onEvent({ type: event, ...JSON.parse(data) } as ChatEvent);

@@ -99,6 +99,8 @@ class Message(_Doc):
     content: str
     citations: list[dict[str, Any]] = Field(default_factory=list)  # {chunk_id, page, chapter}
     trace: list[dict[str, Any]] = Field(default_factory=list)  # tool calls behind an answer
+    # Graph nodes the answer's tools returned: {seeds, expanded, edges, communities}, for the UI.
+    graph_refs: dict[str, list] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utcnow)
 
 
