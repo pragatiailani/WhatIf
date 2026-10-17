@@ -18,7 +18,7 @@ STORY_POS_PER_CHUNK = 1000  # story_pos = chunk.seq * 1000 + order within the ch
 class PageGraph:
     graph: GraphPayload
     mentions: list[Mention]
-    dropped: int  # items discarded: ungrounded quote, unknown entity, empty name
+    dropped: int  # items discarded: invalid, ungrounded quote, unknown entity, empty name
 
     def to_level(self, chunk: Chunk) -> GraphLevel:
         """The level-0 record for this page (index = chunk seq)."""
@@ -50,7 +50,7 @@ def _mention(chunk: Chunk, node_key: str, ev: Evidence) -> Mention:
 
 def build_page_graph(chunk: Chunk, extraction: ChunkExtraction) -> PageGraph:
     mentions: list[Mention] = []
-    dropped = 0
+    dropped = extraction.invalid
 
     # --- entities: merge repeats within the page by key ---------------------------------
     entities: dict[str, dict] = {}

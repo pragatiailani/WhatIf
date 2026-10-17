@@ -8,7 +8,7 @@ import { BookCover } from "../components/BookCover";
 import { Button, Page } from "../components/ui";
 import { errorText, useToast } from "../lib/ui";
 
-const ACCEPT = ".txt,.md,.pdf,.epub";
+const ACCEPT = ".pdf";
 
 export default function Upload() {
   const toast = useToast();
@@ -18,12 +18,13 @@ export default function Upload() {
   const [over, setOver] = useState(false);
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
-  const [visibility, setVisibility] = useState<Visibility>("private");
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [busy, setBusy] = useState(false);
   const [book, setBook] = useState<Book | null>(null);
 
   const pick = (f: File | undefined) => {
     if (!f) return;
+    if (!f.name.toLowerCase().endsWith(".pdf")) return toast("Only PDF files are supported for now.", "error");
     setFile(f);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
   };
@@ -100,12 +101,12 @@ export default function Upload() {
                 <UploadCloud className="size-12 text-gold" />
               </motion.div>
               <p className="font-display text-xl">Drop your manuscript here</p>
-              <p className="text-sm text-ink-mute">.txt, .md, .pdf or .epub, up to 20 MB</p>
+              <p className="text-sm text-ink-mute">PDF only, up to 20 MB</p>
             </motion.div>
           )}
         </AnimatePresence>
       </motion.div>
-      {isMock && <p className="mt-2 text-xs text-ink-mute">Demo mode extracts characters from .txt and .md files in your browser. Other formats get a sample graph.</p>}
+      {isMock && <p className="mt-2 text-xs text-ink-mute">Demo mode gives uploads a sample graph. Set VITE_API_MODE=http to ingest with the real backend.</p>}
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2">
         <label className="block">
@@ -121,7 +122,7 @@ export default function Upload() {
       <fieldset className="mt-6">
         <legend className="mb-2 text-xs font-medium uppercase tracking-wider text-ink-mute">Who can see it</legend>
         <div className="grid gap-3 sm:grid-cols-2">
-          {([["private", Lock, "Only me", "Your upload and its storylines stay private."], ["public", Globe, "Public library", "Anyone can read it and write storylines."]] as const).map(([v, I, label, hint]) => (
+          {([["public", Globe, "Public library", "Anyone can read it and write storylines."], ["private", Lock, "Only me", "Your upload and its storylines stay private."]] as const).map(([v, I, label, hint]) => (
             <button key={v} type="button" onClick={() => setVisibility(v)} className={`flex items-start gap-3 rounded-xl border p-4 text-left transition ${visibility === v ? "border-gold/60 bg-gold-soft" : "border-line hover:border-gold/30"}`}>
               <I className={`mt-0.5 size-4 ${visibility === v ? "text-gold" : "text-ink-mute"}`} />
               <span>

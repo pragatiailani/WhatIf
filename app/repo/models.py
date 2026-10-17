@@ -30,6 +30,13 @@ class _Doc(BaseModel):
 
 # --- Mongo ---------------------------------------------------------------
 
+class User(_Doc):
+    name: str
+    email: str  # lower-cased
+    password_hash: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 BookStatus = Literal["queued", "parsing", "extracting", "merging", "indexing", "ready", "failed"]
 Visibility = Literal["public", "private"]
 

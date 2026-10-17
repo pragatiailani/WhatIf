@@ -2,17 +2,31 @@
 
 Every item carries an `evidence` quote copied from the chunk text. The quote is matched back to
 the text in `app.extraction.evidence`; page numbers are never part of the LLM output.
+
+LLM output is parsed leniently: near-miss values are normalized (type case, synonyms, unknown
+roles), and an item that is still invalid is dropped and counted instead of failing the page.
 """
 
 import re
 import unicodedata
-from typing import Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.constants import FALLBACK_REL, REL_VOCABULARY
 
 EntityType = Literal["Character", "Place", "Organization", "Group", "Object", "Concept"]
+Role = Literal["actor", "target", "witness", "other"]
+
+_ENTITY_TYPES = {t.lower(): t for t in get_args(EntityType)}
+_TYPE_SYNONYMS = {"person": "Character", "location": "Place", "organisation": "Organization"}
 
 
 class ExtractedEntity(BaseModel):
@@ -22,10 +36,22 @@ class ExtractedEntity(BaseModel):
     description: str = Field(description="One or two sentences, using only this chunk")
     evidence: str = Field(description="Short verbatim quote from the chunk mentioning the entity")
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_type(cls, value: Any) -> Any:
+        key = str(value).strip().lower()
+        return _ENTITY_TYPES.get(key) or _TYPE_SYNONYMS.get(key, value)
+
 
 class EventParticipant(BaseModel):
     name: str = Field(description="Name of an extracted entity")
-    role: Literal["actor", "target", "witness", "other"] = "other"
+    role: Role = "other"
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value: Any) -> str:
+        role = str(value or "").strip().lower()
+        return role if role in get_args(Role) else "other"
 
 
 class ExtractedEvent(BaseModel):
@@ -56,6 +82,34 @@ class ChunkExtraction(BaseModel):
     entities: list[ExtractedEntity] = Field(default_factory=list)
     events: list[ExtractedEvent] = Field(default_factory=list)
     relations: list[ExtractedRelation] = Field(default_factory=list)
+    _invalid: int = PrivateAttr(default=0)
+
+    @property
+    def invalid(self) -> int:
+        """Items dropped because they failed validation (e.g. an unknown entity type)."""
+        return self._invalid
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _drop_invalid_items(cls, data: Any, handler):
+        invalid = 0
+        if isinstance(data, dict):
+            data = dict(data)
+            for name, item_model in (
+                ("entities", ExtractedEntity),
+                ("events", ExtractedEvent),
+                ("relations", ExtractedRelation),
+            ):
+                kept = []
+                for item in data.get(name) or []:
+                    try:
+                        kept.append(item_model.model_validate(item))
+                    except ValidationError:
+                        invalid += 1
+                data[name] = kept
+        extraction = handler(data)
+        extraction._invalid += invalid
+        return extraction
 
 
 # --- keys ----------------------------------------------------------------
