@@ -3,14 +3,36 @@
 Import from `app.repo`, never from `app.db`.
 """
 
-from app.repo import books, chunks, graph, graph_levels, mentions, users
+from app.repo import (
+    books,
+    checkpoints,
+    chunks,
+    communities,
+    graph,
+    graph_levels,
+    mentions,
+    sessions,
+    users
+)
 from app.repo.graph import GraphScope
 
 
 def ensure_indexes() -> None:
     """Create Mongo indexes. Falkor indexes are per book: `graph.ensure_indexes(book_id)`."""
-    for module in (users, books, chunks, graph_levels, mentions):
+    for module in (books, chunks, communities,users, graph_levels, mentions, sessions):
         module.ensure_indexes()
 
 
-__all__ = ["GraphScope", "books", "chunks", "ensure_indexes", "graph", "graph_levels", "mentions", "users"]
+__all__ = [
+    "GraphScope",
+    "books",
+    "checkpoints",
+    "chunks",
+    "communities",
+    "ensure_indexes",
+    "graph",
+    "graph_levels",
+    "mentions",
+    "sessions",
+    "users"
+]

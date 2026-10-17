@@ -81,6 +81,45 @@ class Mention(_Doc):
     page: int
 
 
+class ChatSession(_Doc):
+    book_id: str
+    user_id: str | None = None
+    storyline_id: str | None = None  # None = canon
+    title: str | None = None
+    summary: str = ""  # rolling summary of turns folded out of the history window
+    created_at: datetime = Field(default_factory=utcnow)
+    last_active: datetime = Field(default_factory=utcnow)
+
+
+class Message(_Doc):
+    session_id: str
+    seq: int = 0  # position in the session, set by `sessions.add_message`
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)  # {chunk_id, page, chapter}
+    trace: list[dict[str, Any]] = Field(default_factory=list)  # tool calls behind an answer
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Note(_Doc):
+    """A bookmarked answer or passage the user saved from a chat."""
+
+    session_id: str
+    book_id: str
+    message_id: str | None = None
+    text: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Community(_Doc):
+    book_id: str
+    cid: int
+    level: int = 0
+    title: str
+    summary: str
+    entity_keys: list[str] = Field(default_factory=list)
+
+
 class GraphPayload(BaseModel):
     """An intermediate (pre-Falkor) graph. Item shapes are owned by extraction/merge."""
 

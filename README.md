@@ -87,6 +87,26 @@ Open or resume a session (`thread_id`), then save the user message. If the histo
 
 ---
 
+## Agent tools (MCP server)
+
+`app/mcp_server` exposes the tools the inference graph calls. Run it with `python -m app.mcp_server`
+(stdio) or `python -m app.mcp_server streamable-http`. Search uses names, aliases and keywords, not embeddings.
+
+| Group | Tools |
+|---|---|
+| Graph | `find_entities`, `get_neighbors` (1-2 hops), `find_path`, `get_relations` (by type), `search_communities` |
+| Text | `get_chunks`, `search_chunks`, `get_chapter_summary`, `get_timeline` |
+| Session | `get_history`, `get_session_summary`, `save_note` |
+
+Agents live in `app/agents` and are looked up by name: `await get_agent("book_qa").run(book_id, session_id, question)`.
+`book_qa` is a single ReAct agent (`langchain.agents.create_agent`) bound to these tools. The conversation is
+checkpointed to MongoDB (`checkpoints`, `checkpoint_writes`), one thread per chat session, and older turns are
+summarised past `CHAT_HISTORY_BUDGET`. Each question and answer is also saved to `messages` with its citations.
+Graph and text tools take `book_id`, session tools take `session_id`. The inference graph fills these
+in from the user's session; the LLM never picks them.
+
+---
+
 ## Storyline storage model
 
 - The canon graph is **never modified**. Storyline additions go into the same graph, tagged `sid`.
@@ -142,7 +162,8 @@ BELIEVES_IN, SYMBOLIZES, or OTHER when nothing fits.
 | `storyline_checkpoints` | Named save points (`op_seq`) |
 | `community_overrides` | Per-storyline community summaries |
 | `chat_sessions` | Session with `book_id`, `storyline_id`, rolling summary |
-| `messages` | Content, intent, route, citations, op_seqs, trace, feedback |
+| `messages` | Content, `seq`, intent, route, citations, op_seqs, trace, feedback |
+| `notes` | Answers or passages a user bookmarked from a chat |
 | `checkpoints`, `checkpoint_writes` | Managed by LangGraph `MongoDBSaver` |
 
 See `docs/schema.md` for the full field-level schema.
@@ -165,7 +186,8 @@ See `docs/schema.md` for the full field-level schema.
 whatif/
 ├── app/
 │   ├── api/              # REST/streaming endpoints
-│   ├── graphs/           # LangGraph: ingestion, inference, storyline
+│   ├── agents/           # agent registry + LangGraph agents (book_qa), MCP tool binding
+│   ├── graphs/           # LangGraph: ingestion, storyline
 │   ├── extraction/       # prompts, parsers, evidence matching
 │   ├── merge/            # pairing, entity resolution, merge
 │   ├── retrieval/        # local, global, rerank, context
@@ -231,7 +253,15 @@ uv run fastapi dev app/main.py
 # Docs at http://localhost:8000/docs
 ```
 
-6. **CLI commands** (optional):
+6. **Try the agent** (needs both databases running, a book ingested and the LLM keys in `.env`):
+```bash
+uv run python -m scripts.chat                 # chat in the terminal (/history, /new, /quit)
+uv run python -m scripts.chat --book <id>     # skip the book picker
+```
+Or call the API (`/docs` has a form for each): `GET /books`, `POST /sessions {"book_id": ...}`,
+`POST /sessions/{id}/chat {"question": ...}`, `GET /sessions/{id}/messages`. No auth yet.
+
+7. **CLI commands** (optional):
 ```bash
 uv run python -m app.cli ingest path/to/book.pdf
 uv run python -m app.cli chat --book <book_id>
@@ -265,4 +295,5 @@ FalkorDB Browser runs at http://localhost:3000. Connect with host `localhost`, p
 | `EXTRACTION_BATCH_SIZE` | Pages sent to the LLM in parallel during extraction | `10` |
 | `MERGE_CONCURRENCY` | LLM and embedding calls in flight while merging page graphs | `8` |
 | `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
+| `MCP_SERVER_URL` | Streamable-HTTP URL of the tool server; empty runs it over stdio for each question | empty |
 | `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |
