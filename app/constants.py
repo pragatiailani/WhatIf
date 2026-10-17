@@ -158,6 +158,9 @@ HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
 MAX_MODEL_CALLS = 15  # model calls per question (tool loop bound)
 MAX_CITATIONS = 8
 CITATION_QUOTE_CHARS = 240  # excerpt shown with each citation
+TRACE_FOUND_NAMES = 4  # names listed per kind in a trace step's "found" line
+TRACE_TEXT_CHARS = 160  # longest plain-text or error result shown in a trace step
+REASONING_MAX_FACTS = 40  # relations offered to the model when explaining an answer
 # Tools the model may call; the conversation is already in its context.
 AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
 

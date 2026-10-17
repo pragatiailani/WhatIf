@@ -2,7 +2,10 @@
 
 Shapes follow the web app's contract (`web/src/api/types.ts`). Each signed-in user has one
 conversation per book; asking streams Server-Sent Events: `phase` {label} while the agent works,
-`token` {text} as the answer is written, then `done` with the saved turn, or `error` {detail}.
+`step` {label, detail, why, found} as each tool returns, `token` {text} as the answer is written,
+`reasoning` {chain, conclusion} (why the answer holds, when the graph backs it), then `done` with
+the saved turn, or `error` {detail}. A `phase` after tokens means those tokens
+were the model's reasoning (now in a step's `why`), not the answer.
 """
 
 import json
@@ -94,9 +97,16 @@ def list_storylines(
 
 
 def _step(t: dict[str, Any]) -> dict[str, str]:
+    """A trace entry as the web app's step. Turns saved before `why`/`found` have them empty."""
     label = book_qa.PHASES.get(t["tool"], t["tool"]).rstrip("…")
     args = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in t["args"].items())
-    return {"label": label + (" (failed)" if t["error"] else ""), "detail": args}
+    return {
+        "label": label + (" (failed)" if t["error"] else ""),
+        "detail": args,
+        "tool": t["tool"],
+        "why": t.get("why", ""),
+        "found": t.get("found", ""),
+    }
 
 
 def message_out(m: Message, question: str = "") -> dict[str, Any]:
@@ -123,6 +133,7 @@ def message_out(m: Message, question: str = "") -> dict[str, Any]:
         "hops": 1 if refs.get("expanded") else 0,
         "communities": communities,
         "steps": [_step(t) for t in m.trace],
+        "reasoning": m.reasoning,
     }
     return out
 
@@ -165,6 +176,10 @@ async def ask(
             async for kind, value in book_qa.stream(book_id, session.id, body.text):
                 if kind == "phase":
                     yield _sse("phase", {"label": value})
+                elif kind == "step":
+                    yield _sse("step", _step(value))
+                elif kind == "reasoning":
+                    yield _sse("reasoning", value)
                 elif kind == "token":
                     yield _sse("token", {"text": value})
                 else:

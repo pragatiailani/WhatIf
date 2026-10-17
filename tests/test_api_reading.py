@@ -40,6 +40,13 @@ def events_of(res) -> list[tuple[str, dict]]:
     return out
 
 
+REASONING = {
+    "chain": [{"kind": "relation", "id": "r1", "src_key": "ravi", "dst_key": "asha", "src": "Ravi",
+               "dst": "Asha", "rel": "OWES", "description": "", "why": "Ravi owes Asha."}],
+    "conclusion": "So he left.",
+}
+
+
 def fake_stream(monkeypatch, *, fail=False):
     """Replace the agent: phases and tokens, then a saved turn like the real one."""
     seen = []
@@ -49,8 +56,11 @@ def fake_stream(monkeypatch, *, fail=False):
         yield "phase", "Searching the graph and the text…"
         if fail:
             raise RuntimeError("LLM exploded")
+        yield "step", {"tool": "retrieve", "args": {"query": question}, "why": "Look for Ravi.",
+                       "found": "1 entities (Ravi)", "error": False}
         yield "token", "A "
         yield "token", "debt."
+        yield "reasoning", REASONING
         u = sessions.add_message(Message(session_id=session_id, role="user", content=question))
         a = sessions.add_message(Message(
             session_id=session_id, role="assistant", content="A debt.",
@@ -58,6 +68,7 @@ def fake_stream(monkeypatch, *, fail=False):
                         "seq": 0, "quote": "Ravi left Delhi because of the debt."}],
             trace=[{"tool": "retrieve", "args": {"query": question}, "error": False}],
             graph_refs={"seeds": ["ravi"], "expanded": ["asha"], "edges": ["r1"], "communities": [3]},
+            reasoning=REASONING,
         ))  # fmt: skip
         yield "done", {"answer": "A debt.", "actions": [], "user_message": u, "assistant_message": a}
 
@@ -114,8 +125,12 @@ def test_ask_streams_and_saves(client, monkeypatch):
                       headers=h)
     assert res.headers["content-type"].startswith("text/event-stream")
     evs = events_of(res)
-    assert [e for e, _ in evs] == ["phase", "token", "token", "done"]
+    assert [e for e, _ in evs] == ["phase", "step", "token", "token", "reasoning", "done"]
+    assert evs[4][1] == REASONING
     assert evs[0][1] == {"label": "Searching the graph and the text…"}
+    assert evs[1][1] == {"label": "Searching the graph and the text", "tool": "retrieve",
+                         "detail": 'query: "Why did Ravi leave?"', "why": "Look for Ravi.",
+                         "found": "1 entities (Ravi)"}
     assert "".join(d["text"] for e, d in evs if e == "token") == "A debt."
 
     turn = evs[-1][1]
@@ -124,9 +139,11 @@ def test_ask_streams_and_saves(client, monkeypatch):
     assert a["citations"] == [{"chapter": "Chapter 1", "page": 3,
                                "quote": "Ravi left Delhi because of the debt."}]
     assert a["route"] == "local" and a["trace"]["communities"] == []  # retrieve's are not "global"
+    assert a["trace"]["reasoning"] == REASONING
     assert a["trace"]["seeds"] == ["ravi"] and a["trace"]["edges"] == ["r1"] and a["trace"]["hops"] == 1
-    assert a["trace"]["steps"] == [{"label": "Searching the graph and the text",
-                                    "detail": 'query: "Why did Ravi leave?"'}]
+    # a turn saved without why/found (older messages) still reads
+    assert a["trace"]["steps"] == [{"label": "Searching the graph and the text", "tool": "retrieve",
+                                    "detail": 'query: "Why did Ravi leave?"', "why": "", "found": ""}]
 
     # one conversation per user and book: the second question reuses the session
     client.post(f"/books/{b.id}/chat", json={"text": "And then?"}, headers=h)

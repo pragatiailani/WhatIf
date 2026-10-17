@@ -103,6 +103,8 @@ export const httpApi: Api = {
     let turn: ChatTurn | null = null;
     await readSse(res, (event, data) => {
       if (event === "phase" || event === "token") onEvent({ type: event, ...JSON.parse(data) } as ChatEvent);
+      else if (event === "step") onEvent({ type: "step", step: JSON.parse(data) });
+      else if (event === "reasoning") onEvent({ type: "reasoning", reasoning: JSON.parse(data) });
       else if (event === "done") turn = JSON.parse(data);
       else if (event === "error") throw new Error(JSON.parse(data).detail);
     });

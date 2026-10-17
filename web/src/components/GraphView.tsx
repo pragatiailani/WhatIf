@@ -52,6 +52,20 @@ export function GraphView({ graph, overlay, compact }: { graph: StoryGraph; over
     const trace = overlay?.kind === "trace" ? overlay.trace : overlay?.trace;
     const diff = overlay?.kind === "diff" ? overlay.diff : null;
     const communityMembers = new Set(trace?.communities.length ? graph.entities.filter((e) => trace.communities.includes(e.community_id ?? -1)).map((e) => e.key) : []);
+    // An answer with reasoning lights up just its chain: the entities and relations it names, and its events.
+    const chain = trace?.reasoning?.chain ?? [];
+    if (!diff && chain.length) {
+      return {
+        active: true,
+        seeds: new Set(chain.flatMap((l) => (l.kind === "relation" ? [l.src_key, l.dst_key] : l.involves))),
+        expanded: new Set(chain.flatMap((l) => (l.kind === "event" ? [l.key] : []))),
+        edges: new Set(chain.flatMap((l) => (l.kind === "relation" ? [l.id] : []))),
+        added: new Set<string>(),
+        addedEdges: new Set<string>(),
+        hidden: new Set<string>(),
+        modified: new Set<string>(),
+      };
+    }
     return {
       active: !!overlay,
       seeds: new Set(trace?.seeds ?? []),

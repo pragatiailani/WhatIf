@@ -336,6 +336,19 @@ def entity_events(scope: GraphScope, key: str) -> list[tuple[GraphEvent, str]]:
     return [(GraphEvent.model_validate(_props(e)), role) for e, role in rows]
 
 
+def event_participants(scope: GraphScope, keys: Sequence[str]) -> dict[str, list[str]]:
+    """Event key -> the keys of the entities it involves, for the given events."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event)-[:INVOLVES]->(n:Entity) WHERE e.key IN $keys AND {visible(scope, 'e', 'n')}
+        RETURN e.key, collect(n.key)
+        """,
+        {"keys": list(keys)},
+    )
+    return {k: [n for n in found if n] for k, found in rows}
+
+
 def book_graph(
     scope: GraphScope,
 ) -> tuple[list[GraphEntity], list[tuple[GraphEvent, list[str]]], list[GraphRelation]]:
