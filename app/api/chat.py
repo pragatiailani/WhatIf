@@ -3,6 +3,7 @@
 There is no authentication yet; anyone who can reach the API can use any book and session.
 """
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -13,7 +14,8 @@ from app.repo import books, sessions
 from app.repo.models import ChatSession
 
 router = APIRouter(tags=["chat"])
-AGENT = "book_qa"
+AGENT = "whatif"
+log = logging.getLogger(__name__)
 
 
 class NewSession(BaseModel):
@@ -24,19 +26,12 @@ class Question(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
 
 
-@router.get("/books")
-def list_books() -> list[dict[str, Any]]:
-    return [
-        {"id": b.id, "title": b.title, "author": b.author, "status": b.status}
-        for b in books.list_books()
-    ]
-
-
 @router.post("/sessions", status_code=201)
 def create_session(body: NewSession) -> dict[str, Any]:
     if books.get_book(body.book_id) is None:
         raise HTTPException(404, f"unknown book '{body.book_id}'")
     session = sessions.create_session(ChatSession(book_id=body.book_id))
+    log.info("chat session created session=%s book=%s", session.id, session.book_id)
     return {"session_id": session.id, "book_id": session.book_id}
 
 

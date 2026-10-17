@@ -25,8 +25,6 @@ def client(mongo, monkeypatch):
 
 def test_chat_flow(client):
     book = books.create_book(Book(title="Kim", content_hash="h", status="ready"))
-    assert client.get("/books").json() == [
-        {"id": book.id, "title": "Kim", "author": None, "status": "ready"}]
 
     created = client.post("/sessions", json={"book_id": book.id})
     assert created.status_code == 201

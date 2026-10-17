@@ -7,6 +7,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
 from app.config import Settings, get_settings
+from app.llm.callbacks import LlmCallLogger
 
 
 def _require_credentials(settings: Settings) -> None:
@@ -34,6 +35,7 @@ def get_chat_model() -> BaseChatModel:
         azure_deployment=settings.azure_llm_model,
         temperature=0,
         max_retries=3,
+        callbacks=[LlmCallLogger(settings.azure_llm_model)],
     )
 
 

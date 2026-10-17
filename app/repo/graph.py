@@ -1,9 +1,12 @@
-"""FalkorDB access. Every read goes through `visible()`, the sid/hidden-set filter hook.
+"""FalkorDB access. Every read goes through `visible()`, the sid/hidden-set filter.
 
-Only canon scopes are supported for now; storyline scopes (sid + hidden sets) plug into
-`visible()` once the storyline repo exists.
+A canon scope sees only untagged items. A storyline scope also sees that storyline's own items up
+to `max_op` (so uncommitted ops can be left out) and never sees what its ops hid. Canon is never
+modified: storyline items carry `sid` and `created_by_op`.
 """
 
+import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -18,15 +21,21 @@ from app.constants import (
     GRAPH_NAME_PREFIX,
     KEY_INDEXED_LABELS,
     OMITTED_GRAPH_PROPS,
+    SLOW_QUERY_SECONDS,
 )
 from app.db.falkor import select_graph
 from app.repo.models import GraphEntity, GraphEvent, GraphRelation
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class GraphScope:
     book_id: str
     sid: str | None = None  # None = canon
+    max_op: int = 0  # storyline items created by ops after this are not visible
+    hidden_nodes: frozenset[str] = frozenset()  # node keys hidden by the storyline's ops
+    hidden_edges: frozenset[str] = frozenset()  # REL edge ids hidden by the storyline's ops
 
     @classmethod
     def canon(cls, book_id: str) -> "GraphScope":
@@ -43,21 +52,56 @@ def _graph(book_id: str) -> Graph:
 
 def visible(scope: GraphScope, *aliases: str) -> str:
     """Cypher predicate restricting each alias (node or edge) to what `scope` may see."""
-    if scope.sid is not None:
-        raise NotImplementedError("storyline scopes are not supported yet (canon only)")
-    return " AND ".join(f"{a}.sid IS NULL" for a in aliases)
+    if scope.sid is None:
+        return " AND ".join(f"{a}.sid IS NULL" for a in aliases)
+    # coalesce: nodes have no `id` and edges no `key`, and `null IN list` would drop the row
+    return " AND ".join(
+        f"(({a}.sid IS NULL OR ({a}.sid = $sid AND {a}.created_by_op <= $max_op))"
+        f" AND NOT (coalesce({a}.key, '') IN $hidden_nodes)"
+        f" AND NOT (coalesce({a}.id, '') IN $hidden_edges))"
+        for a in aliases
+    )
+
+
+def scope_params(scope: GraphScope) -> dict[str, Any]:
+    """Query parameters that `visible(scope, ...)` refers to."""
+    if scope.sid is None:
+        return {}
+    return {
+        "sid": scope.sid,
+        "max_op": scope.max_op,
+        "hidden_nodes": sorted(scope.hidden_nodes),
+        "hidden_edges": sorted(scope.hidden_edges),
+    }
 
 
 def _props(value: Any) -> dict[str, Any]:
     return {k: v for k, v in value.items() if k not in OMITTED_GRAPH_PROPS}
 
 
+def _timed(kind: str, book_id: str, cypher: str, run):
+    """Run a query; log it at debug, or as a warning if it was slow or failed."""
+    started = time.perf_counter()
+    try:
+        result = run()
+    except Exception:
+        log.error("graph %s failed book=%s query=%s", kind, book_id, " ".join(cypher.split())[:300])
+        raise
+    seconds = time.perf_counter() - started
+    level = logging.WARNING if seconds >= SLOW_QUERY_SECONDS else logging.DEBUG
+    log.log(level, "graph %s book=%s in %dms %s", kind, book_id, seconds * 1000,
+            "SLOW: " + " ".join(cypher.split())[:200] if level == logging.WARNING else "")
+    return result
+
+
 def _read(scope: GraphScope, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-    return _graph(scope.book_id).ro_query(cypher, params or {}).result_set
+    all_params = {**scope_params(scope), **(params or {})}
+    return _timed("read", scope.book_id, cypher,
+                  lambda: _graph(scope.book_id).ro_query(cypher, all_params).result_set)
 
 
 def _write(book_id: str, cypher: str, params: dict[str, Any] | None = None) -> None:
-    _graph(book_id).query(cypher, params or {})
+    _timed("write", book_id, cypher, lambda: _graph(book_id).query(cypher, params or {}))
 
 
 # --- schema --------------------------------------------------------------
@@ -83,17 +127,17 @@ def drop_graph(book_id: str, missing_ok: bool = False) -> None:
 # --- canon writes --------------------------------------------------------
 
 
-def _payload(item: GraphEntity | GraphEvent | GraphRelation) -> dict[str, Any]:
-    if item.sid is not None:
-        raise ValueError("canon writes must not carry a sid")
+def _payload(item: GraphEntity | GraphEvent | GraphRelation, branch: bool = False) -> dict[str, Any]:
+    if branch != (item.sid is not None):
+        raise ValueError("storyline writes need a sid" if branch else "canon writes must not carry a sid")
     return item.model_dump(exclude_none=True)
 
 
-def upsert_entities(book_id: str, entities: Sequence[GraphEntity]) -> None:
+def upsert_entities(book_id: str, entities: Sequence[GraphEntity], branch: bool = False) -> None:
     """Entities get their type as a second label (`:Entity:Character`) when it is a known type."""
     by_type: dict[str, list[dict[str, Any]]] = {}
     for e in entities:
-        by_type.setdefault(e.type, []).append(_payload(e))
+        by_type.setdefault(e.type, []).append(_payload(e, branch))
     for type_, rows in by_type.items():
         labels = f"Entity:{type_}" if type_ in ENTITY_TYPES else "Entity"  # never raw input
         _write(
@@ -108,8 +152,8 @@ def upsert_entities(book_id: str, entities: Sequence[GraphEntity]) -> None:
         )
 
 
-def upsert_events(book_id: str, events: Sequence[GraphEvent]) -> None:
-    rows = [_payload(e) for e in events]
+def upsert_events(book_id: str, events: Sequence[GraphEvent], branch: bool = False) -> None:
+    rows = [_payload(e, branch) for e in events]
     _write(
         book_id,
         """
@@ -122,8 +166,8 @@ def upsert_events(book_id: str, events: Sequence[GraphEvent]) -> None:
     )
 
 
-def upsert_relations(book_id: str, relations: Sequence[GraphRelation]) -> None:
-    rows = [_payload(r) for r in relations]
+def upsert_relations(book_id: str, relations: Sequence[GraphRelation], branch: bool = False) -> None:
+    rows = [_payload(r, branch) for r in relations]
     _write(
         book_id,
         """
@@ -131,7 +175,7 @@ def upsert_relations(book_id: str, relations: Sequence[GraphRelation]) -> None:
         MATCH (a:Entity {key: row.src}), (b:Entity {key: row.dst})
         MERGE (a)-[r:REL {id: row.id}]->(b)
         SET r.rel = row.rel, r.description = row.description, r.weight = row.weight,
-            r.story_pos = row.story_pos
+            r.story_pos = row.story_pos, r.sid = row.sid, r.created_by_op = row.created_by_op
         """,
         {"rows": rows},
     )
@@ -232,19 +276,24 @@ def events_between(scope: GraphScope, pos_from: float, pos_to: float) -> list[Gr
 
 
 def entity_relations(
-    scope: GraphScope, key: str, limit: int = DEFAULT_RELATION_LIMIT
+    scope: GraphScope,
+    key: str,
+    limit: int = DEFAULT_RELATION_LIMIT,
+    rel_types: Sequence[str] | None = None,
 ) -> list[tuple[GraphRelation, GraphEntity]]:
-    """REL edges touching `key` (either direction) with the entity on the other end."""
+    """REL edges touching `key` (either direction) with the entity on the other end, optionally
+    only of `rel_types`."""
+    type_filter = "AND r.rel IN $rel_types" if rel_types else ""
     rows = _read(
         scope,
         f"""
         MATCH (n:Entity {{key: $key}})-[r:REL]-(m:Entity)
-        WHERE {visible(scope, 'n', 'r', 'm')}
+        WHERE {visible(scope, 'n', 'r', 'm')} {type_filter}
         RETURN properties(r), startNode(r).key, endNode(r).key, properties(m)
         ORDER BY r.weight DESC
         LIMIT $limit
         """,
-        {"key": key, "limit": limit},
+        {"key": key, "limit": limit, "rel_types": list(rel_types or [])},
     )
     return [
         (
@@ -322,3 +371,102 @@ def chapter_events(scope: GraphScope, chapter: str) -> list[tuple[GraphEvent, li
         {"chapter": chapter},
     )
     return [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys in rows]
+
+
+def events_involving(
+    scope: GraphScope, keys: Sequence[str], pos_from: float
+) -> list[tuple[GraphEvent, list[str]]]:
+    """Events at or after `pos_from` involving any of `keys`, each with which of `keys` it
+    involves, in narrative order."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event)-[:INVOLVES]->(n:Entity)
+        WHERE n.key IN $keys AND e.story_pos >= $pos_from AND {visible(scope, 'e', 'n')}
+        RETURN properties(e), collect(n.key) ORDER BY e.story_pos
+        """,
+        {"keys": list(keys), "pos_from": pos_from},
+    )
+    return [(GraphEvent.model_validate(_props(e)), found) for e, found in rows]
+
+
+def relations_involving(
+    scope: GraphScope, keys: Sequence[str], pos_from: float
+) -> list[GraphRelation]:
+    """REL edges at or after `pos_from` with either end in `keys`, in narrative order."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (a:Entity)-[r:REL]->(b:Entity)
+        WHERE (a.key IN $keys OR b.key IN $keys) AND r.story_pos >= $pos_from
+          AND {visible(scope, 'a', 'r', 'b')}
+        RETURN properties(r), a.key, b.key ORDER BY r.story_pos
+        """,
+        {"keys": list(keys), "pos_from": pos_from},
+    )
+    return [GraphRelation.model_validate({**p, "src": a, "dst": b}) for p, a, b in rows]
+
+
+def event_links(scope: GraphScope, key: str) -> dict[str, Any]:
+    """An event's participants as (entity key, role) and its places as entity keys."""
+    involves = _read(
+        scope,
+        f"""
+        MATCH (e:Event {{key: $key}})-[i:INVOLVES]->(n:Entity)
+        WHERE {visible(scope, 'e', 'n')} RETURN n.key, i.role
+        """,
+        {"key": key},
+    )
+    at = _read(
+        scope,
+        f"""
+        MATCH (e:Event {{key: $key}})-[:AT]->(p:Entity)
+        WHERE {visible(scope, 'e', 'p')} RETURN p.key
+        """,
+        {"key": key},
+    )
+    return {"involves": [(k, role) for k, role in involves], "at": [row[0] for row in at]}
+
+
+def delete_storyline_items(book_id: str, sid: str, after_op: int) -> None:
+    """Remove a storyline's nodes and REL edges created by ops after `after_op`."""
+    params = {"sid": sid, "op": after_op}
+    _write(
+        book_id,
+        "MATCH ()-[r:REL]->() WHERE r.sid = $sid AND r.created_by_op > $op DELETE r",
+        params,
+    )
+    _write(
+        book_id, "MATCH (n) WHERE n.sid = $sid AND n.created_by_op > $op DETACH DELETE n", params
+    )
+
+
+def all_entities(scope: GraphScope) -> list[GraphEntity]:
+    """Every entity the scope can see."""
+    rows = _read(scope, f"MATCH (n:Entity) WHERE {visible(scope, 'n')} RETURN properties(n)")
+    return [GraphEntity.model_validate(_props(r[0])) for r in rows]
+
+
+def all_events(scope: GraphScope) -> list[tuple[GraphEvent, list[str]]]:
+    """Every event the scope can see with the keys of its participants, in narrative order."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event) WHERE {visible(scope, 'e')}
+        OPTIONAL MATCH (e)-[:INVOLVES]->(n:Entity)
+        RETURN properties(e), collect(n.key) ORDER BY e.story_pos
+        """,
+    )
+    return [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys in rows]
+
+
+def all_relations(scope: GraphScope) -> list[GraphRelation]:
+    """Every REL edge the scope can see."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (a:Entity)-[r:REL]->(b:Entity) WHERE {visible(scope, 'a', 'r', 'b')}
+        RETURN properties(r), a.key, b.key
+        """,
+    )
+    return [GraphRelation.model_validate({**p, "src": a, "dst": b}) for p, a, b in rows]

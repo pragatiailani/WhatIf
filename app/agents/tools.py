@@ -79,7 +79,8 @@ def _connection(settings: Settings) -> dict[str, Any]:
 
 @asynccontextmanager
 async def open_tools(book_id: str, session_id: str) -> AsyncIterator[list[BaseTool]]:
-    """The agent's tools for one question. One server connection is held while it runs."""
+    """The agent's tools for one question: every MCP tool except `AGENT_EXCLUDED_TOOLS`. One
+    server connection is held while it runs."""
     client = MultiServerMCPClient({SERVER_NAME: _connection(get_settings())})
     values = {"book_id": book_id, "session_id": session_id}
     async with client.session(SERVER_NAME) as session:

@@ -5,8 +5,12 @@ Story relations become `REL` edges; event edges (INVOLVES, AT, BEFORE, IN_CHAPTE
 here from the events' participants, place, order and chapter.
 """
 
+import logging
+
 from app.repo import chunks, graph, graph_levels
 from app.repo.models import GraphEntity, GraphEvent, GraphLevel, GraphRelation
+
+log = logging.getLogger(__name__)
 
 
 def _root(book_id: str) -> GraphLevel:
@@ -73,15 +77,18 @@ def publish_book_graph(book_id: str) -> dict[str, int]:
     before = [{"src": a["key"], "dst": b["key"]} for a, b in pairs]
     in_chapter = [{"event": e["key"], "chapter": e["chapter"]} for e in g.events if e["chapter"]]
 
+    log.info("publishing graph book=%s entities=%d events=%d relations=%d", book_id, len(entities), len(events), len(relations))
     graph.drop_graph(book_id, missing_ok=True)
     graph.ensure_indexes(book_id)
     graph.upsert_entities(book_id, entities)
     graph.upsert_events(book_id, events)
     graph.upsert_relations(book_id, relations)
     graph.upsert_event_links(book_id, involves, at, before, in_chapter)
-    return {
+    counts = {
         "entities": len(entities),
         "events": len(events),
         "relations": len(relations),
         "event_links": len(involves) + len(at) + len(before) + len(in_chapter),
     }
+    log.info("graph published book=%s event_links=%d", book_id, counts["event_links"])
+    return counts

@@ -125,8 +125,36 @@ TOOL_BFS_BATCH = 100  # nodes per expand() query in find_path
 
 DEFAULT_CHAT_HISTORY_BUDGET = 6000  # tokens of conversation before older turns are summarised
 HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
-MAX_MODEL_CALLS = 15  # model calls per question (tool loop bound)
+MAX_MODEL_CALLS = 80  # model calls per message (tool loop bound); a draft queue needs many
 MAX_CITATIONS = 8
 # Tools the model may call; the conversation is already in its context.
 AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
 TITLE_CHARS = 60
+
+# --- Storylines ------------------------------------------------------------------
+
+STORYLINES_COLLECTION = "storylines"
+STORYLINE_OPS_COLLECTION = "storyline_ops"
+STORYLINE_ITEMS_COLLECTION = "storyline_items"
+
+DEAD_STATUSES = frozenset({"dead", "killed", "deceased"})
+MAX_QUEUE_ITEMS = 400  # items a draft queues at once (events and relations after the divergence)
+OPEN_ITEMS_PER_CALL = 5  # open items returned per get_open_items call, to keep the context small
+MAX_VERIFY_ISSUES = 20  # issues reported by one verification
+
+# --- Storyline prose ---------------------------------------------------------------
+
+STORYLINE_CHUNKS_COLLECTION = "storyline_chunks"
+PROSE_SEGMENT_CHARS = 12000  # original text rewritten per LLM call; a long chapter is done in pieces
+PROSE_CONTEXT_CHARS = 800  # tail of the previous rewritten piece shown for continuity
+PROSE_MAX_RETRIES = 1  # regenerations when the passage check finds contradictions
+
+# --- Logging ---------------------------------------------------------------------
+
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s [%(request_id)s] %(message)s"
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUPS = 3
+SLOW_QUERY_SECONDS = 1.0  # a graph query slower than this is logged as a warning
+LOG_VALUE_CHARS = 200  # longest argument value written to a log line
+# Libraries that log a line per request or connection; kept at WARNING unless LOG_LEVEL=DEBUG.
+NOISY_LOGGERS = ("httpx", "httpcore", "openai", "urllib3", "pymongo", "mcp", "asyncio", "watchfiles")

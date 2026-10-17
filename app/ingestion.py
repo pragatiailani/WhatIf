@@ -5,14 +5,20 @@ page graphs and merge nodes are skipped, and publish replaces the canon graph. S
 failed book picks up where it stopped.
 """
 
+import logging
+import time
+
 from app.constants import EXTRACTION_ATTEMPTS, MERGE_ATTEMPTS
 from app.extraction.runner import generate_page_graphs
+from app.logging_config import Timer, fields
 from app.merge.publish import publish_book_graph
 from app.merge.runner import merge_page_graphs, tree_height
 from app.repo import books, chunks, graph_levels
-from app.repo.models import Book
+from app.repo.models import Book, BookStatus
 from app.repo.service.chunking import chunk_book
 from app.repo.service.parsing import ParsedBook
+
+log = logging.getLogger(__name__)
 
 _DETAIL = {
     "queued": "Waiting to start…",
@@ -41,36 +47,59 @@ def progress(book: Book) -> dict:
     return {"book_id": book.id, "status": book.status, "progress": min(done, 1.0), "detail": detail}
 
 
+def _stage(book_id: str, status: BookStatus) -> None:
+    log.info("stage=%s book=%s", status, book_id)
+    books.set_status(book_id, status)
+
+
 def ingest_book(book_id: str, parsed: ParsedBook) -> None:
     """Run every ingestion step for `book_id`, recording status and stats on the book."""
+    log.info("ingestion started book=%s pages=%s chapters=%s", book_id, parsed.page_count, len(parsed.chapters))
+    started = time.perf_counter()
     try:
-        books.set_status(book_id, "parsing")
+        _stage(book_id, "parsing")
         if chunks.count_chunks(book_id) == 0:
             chunks.insert_chunks(chunk_book(book_id, parsed))
+        else:
+            log.info("chunks already saved, skipping book=%s", book_id)
         books.update_stats(
             book_id,
             {"pages": parsed.page_count, "chapters": len(parsed.chapters),
              "chunks": chunks.count_chunks(book_id)},
         )  # fmt: skip
 
-        books.set_status(book_id, "extracting")
+        _stage(book_id, "extracting")
         blocked = 0
-        for _ in range(EXTRACTION_ATTEMPTS):
-            extracted = generate_page_graphs(book_id)  # skips pages already done
+        for attempt in range(1, EXTRACTION_ATTEMPTS + 1):
+            with Timer() as t:
+                extracted = generate_page_graphs(book_id)  # skips pages already done
             blocked += len(extracted.blocked)
+            log.info(
+                "extraction pass %d/%d book=%s done=%d skipped=%d failed=%d blocked=%d dropped=%d in %dms",
+                attempt, EXTRACTION_ATTEMPTS, book_id, len(extracted.done), len(extracted.skipped),
+                len(extracted.failed), len(extracted.blocked), extracted.dropped, t.ms,
+            )  # fmt: skip
             if not extracted.failed:
                 break
+            log.warning("extraction pass %d left %d failed page(s) book=%s", attempt, len(extracted.failed), book_id)
         else:
             seq, error = next(iter(extracted.failed.items()))
             raise RuntimeError(
                 f"extraction failed on {len(extracted.failed)} page(s), e.g. chunk {seq}: {error}"
             )
         if blocked:
+            log.warning("content filter blocked %d page(s) book=%s", blocked, book_id)
             books.update_stats(book_id, {"blocked_pages": blocked})
 
-        books.set_status(book_id, "merging")
-        for _ in range(MERGE_ATTEMPTS):
-            merged = merge_page_graphs(book_id)  # skips nodes already merged
+        _stage(book_id, "merging")
+        for attempt in range(1, MERGE_ATTEMPTS + 1):
+            with Timer() as t:
+                merged = merge_page_graphs(book_id)  # skips nodes already merged
+            log.info(
+                "merge pass %d/%d book=%s merged=%d skipped=%d failed=%d llm_calls=%d in %dms",
+                attempt, MERGE_ATTEMPTS, book_id, len(merged.merged), len(merged.skipped),
+                len(merged.failed), merged.llm_calls, t.ms,
+            )  # fmt: skip
             if merged.root is not None:
                 break
         else:
@@ -79,8 +108,13 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
                 f"merge failed at {len(merged.failed)} node(s), e.g. node {node}: {error}"
             )
 
-        books.set_status(book_id, "indexing")
-        books.update_stats(book_id, publish_book_graph(book_id))
+        _stage(book_id, "indexing")
+        published = publish_book_graph(book_id)
+        books.update_stats(book_id, published)
         books.set_status(book_id, "ready")
+        log.info(
+            "ingestion finished book=%s %s in %.1fs", book_id, fields(published), time.perf_counter() - started
+        )
     except Exception as exc:
+        log.exception("ingestion failed book=%s after %.1fs", book_id, time.perf_counter() - started)
         books.set_status(book_id, "failed", repr(exc))

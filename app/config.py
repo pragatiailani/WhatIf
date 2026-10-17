@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     extraction_batch_size: int = DEFAULT_EXTRACTION_BATCH_SIZE
     merge_concurrency: int = DEFAULT_MERGE_CONCURRENCY
 
+    log_level: str = "INFO"  # DEBUG, INFO, WARNING or ERROR
+    log_file: str = ""  # also write logs to this file (rotated); empty logs to the console only
+
     chat_history_budget: int = DEFAULT_CHAT_HISTORY_BUDGET
     mcp_server_url: str = ""  # streamable-http URL of the tool server; empty runs it over stdio
 

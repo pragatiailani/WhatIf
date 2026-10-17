@@ -9,13 +9,15 @@ Needs MongoDB and FalkorDB running and the LLM settings in .env. In the chat: /h
 
 import argparse
 import asyncio
+import os
 import sys
 
 from app.agents import get_agent
+from app.logging_config import setup_logging
 from app.repo import books, ensure_indexes, sessions
 from app.repo.models import Book, ChatSession
 
-AGENT = "book_qa"
+AGENT = "whatif"
 DIM, RESET = "\033[2m", "\033[0m"
 
 
@@ -83,6 +85,8 @@ async def main() -> None:
     parser.add_argument("--session", help="resume this session")
     args = parser.parse_args()
 
+    # the chat prints its own output, so keep the console quiet unless LOG_LEVEL is set explicitly
+    setup_logging("cli", level=None if os.environ.get("LOG_LEVEL") else "WARNING")
     ensure_indexes()
     if args.session:
         session = sessions.get_session(args.session)

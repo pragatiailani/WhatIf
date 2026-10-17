@@ -69,3 +69,24 @@ def add_note(note: Note) -> Note:
 def list_notes(session_id: str) -> list[Note]:
     cursor = collection(NOTES_COLLECTION).find({"session_id": session_id}).sort("created_at", ASCENDING)
     return [Note.model_validate(d) for d in cursor]
+
+
+def set_storyline(session_id: str, storyline_id: str | None) -> None:
+    """Bind the session to a storyline (None = canon)."""
+    collection(SESSIONS_COLLECTION).update_one(
+        {"_id": session_id}, {"$set": {"storyline_id": storyline_id}}
+    )
+
+
+def find_session(user_id: str, book_id: str, storyline_id: str | None) -> ChatSession | None:
+    """The user's most recently active chat about a book in one storyline (None = canon)."""
+    doc = collection(SESSIONS_COLLECTION).find_one(
+        {"user_id": user_id, "book_id": book_id, "storyline_id": storyline_id},
+        sort=[("last_active", DESCENDING)],
+    )
+    return ChatSession.model_validate(doc) if doc else None
+
+
+def update_message(message_id: str, **fields) -> None:
+    """Set extra fields (route, retrieval, diff) on a saved message."""
+    collection(MESSAGES_COLLECTION).update_one({"_id": message_id}, {"$set": fields})
