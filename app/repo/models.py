@@ -88,6 +88,9 @@ class GraphLevel(_Doc):
     index: int  # position within the level
     seq_start: int  # first chunk seq covered
     seq_end: int  # last chunk seq covered (inclusive)
+    page_start: int | None = None  # first page covered
+    page_end: int | None = None  # last page covered (inclusive)
+    chunk_ids: list[str] = Field(default_factory=list)  # chunks covered, in seq order
     graph: GraphPayload
     created_at: datetime = Field(default_factory=utcnow)
 

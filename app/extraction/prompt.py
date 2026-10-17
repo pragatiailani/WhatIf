@@ -2,7 +2,7 @@
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from app.constants import ENTITY_TYPES, REL_VOCABULARY
+from app.constants import ENTITY_TYPES, FALLBACK_REL, REL_VOCABULARY
 from app.repo.models import Chunk
 
 SYSTEM_PROMPT = f"""You build a knowledge graph from ONE page of a book.
@@ -22,7 +22,7 @@ EVENTS: concrete things that happen (actions, decisions, arrivals, deaths, meeti
 - story_time only if the page states when it happens in the story's world (for example "three years earlier").
 
 RELATIONS: lasting facts linking two extracted entities.
-- rel must be one of: {", ".join(sorted(REL_VOCABULARY))}. If none fits, use RELATED_TO.
+- rel must be one of: {", ".join(sorted(REL_VOCABULARY))}. If none fits, use {FALLBACK_REL}.
 - source and target must be names of entities you extracted.
 
 EVIDENCE: every entity, event and relation needs an evidence quote.

@@ -6,10 +6,10 @@ services:
     container_name: whatif-mongodb
     restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"  # localhost only
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:?set MONGO_USER in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD in .env}
     volumes:
       - mongo_data:/data/db
     networks:
@@ -25,13 +25,17 @@ services:
     container_name: whatif-falkordb
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"  # localhost only
+      - "127.0.0.1:3000:3000"  # FalkorDB Browser (graph UI)
+    environment:
+      FALKOR_PASSWORD: ${FALKOR_PASSWORD:?set FALKOR_PASSWORD in .env}
+      REDIS_ARGS: --requirepass ${FALKOR_PASSWORD:?set FALKOR_PASSWORD in .env}
     volumes:
       - falkor_data:/data
     networks:
       - whatif-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$FALKOR_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5

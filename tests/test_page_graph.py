@@ -71,7 +71,7 @@ def _extraction() -> ChunkExtraction:
                 source="Ravi", target="Meera", rel="friend of", evidence="His friend Meera"
             ),
             ExtractedRelation(source="Ravi", target="Kabir", rel="KILLS", evidence="His friend Meera"),
-            ExtractedRelation(source="Ravi", target="Ravi", rel="KNOWS", evidence="His friend Meera"),
+            ExtractedRelation(source="Ravi", target="Ravi", rel="MEETS", evidence="His friend Meera"),
         ],
     )
 
@@ -126,6 +126,7 @@ def test_level_record_is_level_zero_at_chunk_seq():
     level = build_page_graph(chunk, ChunkExtraction()).to_level(chunk)
     assert (level.book_id, level.level, level.index) == ("b1", 0, 5)
     assert (level.seq_start, level.seq_end) == (5, 5)
+    assert (level.page_start, level.page_end, level.chunk_ids) == (11, 11, [chunk.id])
 
 
 def test_prompt_contains_page_text_and_context():

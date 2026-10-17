@@ -50,7 +50,7 @@ Built with **LangGraph**, **FalkorDB** and **MongoDB**.
 3. Chunk: one chunk per page.
 4. Per-chunk extraction (LangGraph `Send` fan-out): the LLM returns entities, events and relations, each with an **evidence quote**.
 5. Save the level-0 chunk graphs to `graph_levels` and the mentions to `mentions`.
-6. Recursive merge: pair adjacent graphs, resolve entities (alias match, then embedding similarity, then an LLM judge), and merge with provenance kept. Repeat until one graph is left.
+6. Tree merge (`app/merge`): a binary tree of adjacent merges, each node starting as soon as its two children exist. Clear matches (same name and type) are decided in code; only ambiguous entity and event pairs go to an LLM judge, in one batched call per merge. Nodes and edges are merged with provenance kept (pages, chunk ids, page-level keys), and each node is saved to `graph_levels` so a resumed run skips finished subtrees. The root's entities then get final descriptions.
 7. Write the final graph to FalkorDB and create the vector indexes.
 8. Run community detection (Leiden) and write summaries. Set the book's status to `ready`.
 
@@ -115,10 +115,16 @@ Open or resume a session (`thread_id`), then save the user message. If the histo
           first_page, last_page, mention_count, community_id, sid, created_by_op})
 (:Event  {key, summary, story_pos, story_time?, chapter, first_page,
           embedding, sid, created_by_op})
+(:Chapter {title, first_page})
 (:Community {cid, level, title, summary, embedding})
 -[:REL {rel, description, weight, story_pos, sid, created_by_op}]->
--[:INVOLVES {role}]->  -[:AT]->  -[:BEFORE]->  -[:IN_COMMUNITY]->
+-[:INVOLVES {role}]->  -[:AT]->  -[:BEFORE]->  -[:CAUSES]->  -[:IN_CHAPTER]->  -[:IN_COMMUNITY]->
 ```
+Entity types (the second label, `:Entity:Character`): Character, Place, Organization, Group, Object, Concept.
+`REL.rel` is one of: FRIEND_OF, ENEMY_OF, RIVAL_OF, LOVES, MARRIED_TO, PARENT_OF, CHILD_OF, SIBLING_OF,
+RELATIVE_OF, MENTOR_OF, WORKS_FOR, LEADS, MEMBER_OF, ALLY_OF, BETRAYS, HELPS, HARMS, KILLS, SAVES, MEETS,
+TALKS_TO, TRUSTS, DISTRUSTS, FEARS, OWNS, USES, CREATES, SEEKS, LIVES_IN, TRAVELS_TO, LOCATED_IN, PART_OF,
+BELIEVES_IN, SYMBOLIZES, or OTHER when nothing fits.
 
 ### MongoDB collections
 | Collection | Purpose |
@@ -240,13 +246,23 @@ docker compose logs -f        # View logs
 docker compose ps             # Check status
 ```
 
+FalkorDB Browser runs at http://localhost:3000. Connect with host `localhost`, port `6379` and
+`FALKOR_PASSWORD`; each book is a graph named `book_<book_id>`.
+
 ### Environment variables
 | Variable | Description | Default |
 |---|---|---|
-| `AZURE_OPENAI_LLM_KEY`, `AZURE_LLM_ENDPOINT`, `AZURE_LLM_API_VERSION` | Azure OpenAI connection used for extraction and answers | - |
-| `AZURE_LLM_DEPLOYMENT_41_MINI` | Azure deployment name of the chat model | `gpt-4.1-mini` |
-| `MONGO_URI`, `MONGO_DB` | MongoDB connection | `mongodb://admin:admin@localhost:27017` |
-| `FALKOR_HOST`, `FALKOR_PORT` | FalkorDB connection | `localhost:6379` |
+| `AZURE_OPENAI_LLM_KEY`, `AZURE_LLM_ENDPOINT` | Azure OpenAI connection used for extraction and answers | - |
+| `AZURE_LLM_API_VERSION` | Azure OpenAI API version | `2025-01-01-preview` |
+| `AZURE_LLM_MODEL` | Azure deployment name of the chat model | `gpt-4.1-mini` |
+| `AZURE_EMBEDDING_MODEL` | Azure embedding deployment used to compare entities while merging (empty: names only) | - |
+| `MONGO_USER`, `MONGO_PASSWORD` | MongoDB root credentials (used by Docker Compose) | **required** |
+| `MONGO_URI`, `MONGO_DB` | MongoDB connection (`MONGO_URI` includes the credentials) | **required**, `whatif` |
+| `FALKOR_HOST`, `FALKOR_PORT` | FalkorDB connection | `localhost`, `6379` |
+| `FALKOR_PASSWORD` | FalkorDB password (Compose sets it via `--requirepass`) | **required** |
+| `SERVER_HOST`, `SERVER_PORT` | API server bind address | `127.0.0.1`, `8000` |
+| `DEBUG` | Enables auto-reload when running `python -m app.main` | `false` |
 | `EXTRACTION_BATCH_SIZE` | Pages sent to the LLM in parallel during extraction | `10` |
+| `MERGE_CONCURRENCY` | LLM and embedding calls in flight while merging page graphs | `8` |
 | `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
 | `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |

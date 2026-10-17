@@ -28,6 +28,9 @@ class PageGraph:
             index=chunk.seq,
             seq_start=chunk.seq,
             seq_end=chunk.seq,
+            page_start=chunk.page_spans[0].page if chunk.page_spans else None,
+            page_end=chunk.page_spans[-1].page if chunk.page_spans else None,
+            chunk_ids=[chunk.id],
             graph=self.graph,
         )
 
