@@ -1,8 +1,10 @@
-"""Text tools: passages, keyword search, chapter summaries and entity timelines."""
+"""Text tools: passages, hybrid (keyword + meaning) search, chapter summaries and timelines."""
 
 import re
+from collections.abc import Sequence
 from typing import Any
 
+from app import retrieval
 from app.constants import (
     TOOL_MAX_CHUNKS_PER_CALL,
     TOOL_MAX_RESULTS,
@@ -22,7 +24,7 @@ def _pages(chunk: Chunk) -> list[int]:
     return sorted({s.page for s in chunk.page_spans})
 
 
-def _chunk_ref(chunk: Chunk) -> dict[str, Any]:
+def chunk_ref(chunk: Chunk) -> dict[str, Any]:
     pages = _pages(chunk)
     return {
         "chunk_id": chunk.id,
@@ -46,6 +48,14 @@ class _ChapterViews:
         return self._views[chapter]
 
 
+def superseded_note(sl: Storyline | None, views: _ChapterViews, chunk: Chunk, rewritten: set[str]) -> dict[str, str]:
+    """`{"superseded": ...}` for an original passage of a chapter the storyline changed: its text
+    no longer reads that way. Nothing for canon, for unchanged chapters and for rewritten ones."""
+    if sl and chunk.id not in rewritten and chunk.chapter and views[chunk.chapter].changed:
+        return {"superseded": "this chapter was changed in the storyline; use read_chapter"}
+    return {}
+
+
 def get_chunks(
     book_id: str, chunk_ids: list[str], session_id: str | None = None
 ) -> dict[str, Any]:
@@ -59,24 +69,22 @@ def get_chunks(
         rewritten = {p.id for p in passages}
         by_id |= {p.id: p.as_chunk() for p in passages}
     views = _ChapterViews(sl)
-    out = []
-    for i in chunk_ids:
-        if i not in by_id:
-            continue
-        c = by_id[i]
-        item = {**_chunk_ref(c), "text": c.text}
-        if sl and i not in rewritten and c.chapter and views[c.chapter].changed:
-            item["superseded"] = "this chapter was rewritten in the storyline; use read_chapter"
-        out.append(item)
-    return {"chunks": out, "missing": [i for i in chunk_ids if i not in by_id]}
+    return {
+        "chunks": [
+            {**chunk_ref(by_id[i]), "text": by_id[i].text, **superseded_note(sl, views, by_id[i], rewritten)}
+            for i in chunk_ids
+            if i in by_id
+        ],
+        "missing": [i for i in chunk_ids if i not in by_id],
+    }
 
 
-def _snippet(text: str, terms: list[str]) -> str:
-    """About TOOL_SNIPPET_CHARS of text around the earliest query word."""
+def snippet(text: str, terms: list[str], size: int = TOOL_SNIPPET_CHARS) -> str:
+    """About `size` characters of text around the earliest query word (the start without one)."""
     hits = [m.start() for t in terms if (m := re.search(re.escape(t), text, re.IGNORECASE))]
     centre = min(hits) if hits else 0
-    start = max(0, centre - TOOL_SNIPPET_CHARS // 4)
-    end = min(len(text), start + TOOL_SNIPPET_CHARS)
+    start = max(0, centre - size // 4)
+    end = min(len(text), start + size)
     return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
 
 
@@ -104,6 +112,48 @@ def resolve_chapter(book_id: str, name: str) -> dict[str, Any]:
     raise ValueError(f"no chapter matches '{name}'. Chapters: {titles}")
 
 
+def rank_chunks(
+    book_id: str,
+    query: str,
+    chapter: str | None = None,
+    query_vec: Any = None,
+    extra: Sequence[Sequence[str]] = (),
+) -> tuple[list[tuple[Chunk, float, str]], int]:
+    """Chunks for `query`, best first, as (chunk, score, match), plus the keyword match count.
+
+    Keyword matches and the chunks closest in meaning (`query_vec`) are combined by reciprocal
+    rank fusion, together with any `extra` rankings of chunk ids (e.g. from the graph). `match`
+    says where a chunk came from: keyword, meaning, both, or graph. Without semantic or extra
+    rankings this is plain keyword search, scored as before.
+    """
+    terms = list(dict.fromkeys(content_words(query)))
+    phrase = " ".join(words(query))
+    scored = []
+    for c in chunks.search(book_id, terms, chapter=chapter) if terms else []:
+        score = score_text(c.text, terms, phrase)
+        if score:
+            scored.append((score, c))
+    scored.sort(key=lambda sc: (-sc[0], sc[1].seq))
+    meaning = [ref for ref, _ in retrieval.semantic(book_id, "chunk", query_vec)]
+    if not meaning and not any(extra):
+        return [(c, score, "keyword") for score, c in scored], len(scored)
+
+    by_id = {c.id: c for _, c in scored}
+    wanted = [i for ranking in (meaning, *extra) for i in ranking if i not in by_id]
+    by_id.update({c.id: c for c in chunks.get_chunks(list(dict.fromkeys(wanted))) if c.book_id == book_id})
+    keep = {i for i, c in by_id.items() if chapter is None or c.chapter == chapter}
+    keyword = [c.id for _, c in scored]
+    rankings = [[i for i in r if i in keep] for r in (keyword, meaning, *extra)]
+    by_keyword, by_meaning = set(keyword), set(meaning)
+
+    def match(i: str) -> str:
+        if i in by_keyword:
+            return "both" if i in by_meaning else "keyword"
+        return "meaning" if i in by_meaning else "graph"
+
+    return [(by_id[i], score, match(i)) for i, score in retrieval.fuse(*rankings)], len(scored)
+
+
 def search_chunks(
     book_id: str,
     query: str,
@@ -112,42 +162,42 @@ def search_chunks(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     sl = session_storyline(book_id, session_id)
+    query_vec = retrieval.embed_query(query)
     terms = list(dict.fromkeys(content_words(query)))
-    if not terms:
+    if not terms and query_vec is None:
         raise ValueError("query has no searchable words")
     title = resolve_chapter(book_id, chapter)["title"] if chapter else None
-    phrase = " ".join(words(query))
-    pool = chunks.search(book_id, terms, chapter=title)
+    ranked, keyword_matches = rank_chunks(book_id, query, title, query_vec)
     views = _ChapterViews(sl)
     rewritten: dict[str, StorylineChunk] = {}
-    if sl:  # current rewritten chapters replace the original text of those chapters
+    if sl:  # a current rewritten chapter replaces the original text of that chapter
         rewritten = {
-            p.chapter: p for p in storylines.list_passages(sl.id) if p.fingerprint == views[p.chapter].fingerprint
+            p.chapter: p
+            for p in storylines.list_passages(sl.id)
+            if p.fingerprint == views[p.chapter].fingerprint
         }
-        pool = [c for c in pool if c.chapter not in rewritten]
-        pool += [
-            p.as_chunk()
+        phrase = " ".join(words(query))
+        mine = [
+            (p.as_chunk(), score_text(p.text, terms, phrase), "keyword")
             for t, p in rewritten.items()
-            if title in (None, t) and any(w in p.text.lower() for w in terms)
+            if title in (None, t) and terms
         ]
-    scored = []
-    for c in pool:
-        score = score_text(c.text, terms, phrase)
-        if score:
-            scored.append((score, c))
-    scored.sort(key=lambda sc: (-sc[0], sc[1].seq))
-    top = scored[: min(max(limit, 1), TOOL_MAX_RESULTS)]
+        ranked = [m for m in sorted(mine, key=lambda r: -r[1]) if m[1]] + [
+            r for r in ranked if r[0].chapter not in rewritten
+        ]
+    top = ranked[: min(max(limit, 1), TOOL_MAX_RESULTS)]
     rewritten_ids = {p.id for p in rewritten.values()}
-    results = []
-    for score, c in top:
-        item = {**_chunk_ref(c), "score": round(score, 3), "snippet": _snippet(c.text, terms)}
-        if sl and c.id not in rewritten_ids and c.chapter and views[c.chapter].changed:
-            item["superseded"] = "this chapter was changed in the storyline; use read_chapter"
-        results.append(item)
-    return {"results": results, "total_matches": len(scored)}
+    return {
+        "results": [
+            {**chunk_ref(c), "score": round(score, 4), "match": how, "snippet": snippet(c.text, terms),
+             **superseded_note(sl, views, c, rewritten_ids)}
+            for c, score, how in top
+        ],
+        "total_matches": keyword_matches,
+    }
 
 
-def _event_out(event: GraphEvent, chunk_ids: dict[int, str]) -> dict[str, Any]:
+def event_out(event: GraphEvent, chunk_ids: dict[int, str]) -> dict[str, Any]:
     seq = int(event.story_pos // 1000)
     return {
         "key": event.key,
@@ -169,7 +219,7 @@ def get_timeline(book_id: str, entity: str, session_id: str | None = None) -> di
     ids = chunks.ids_by_seq(book_id, {int(e.story_pos // 1000) for e, _ in shown})
     return {
         "entity": {"key": found["key"], "name": found["name"]},
-        "events": [{**_event_out(e, ids), "role": role} for e, role in shown],
+        "events": [{**event_out(e, ids), "role": role} for e, role in shown],
         "total": len(rows),
         "truncated": len(rows) > len(shown),
     }
@@ -202,7 +252,7 @@ def get_chapter_summary(
             {**entity_out(top[k]), "events_in_chapter": counts[k]} for k in top_keys if k in top
         ],
         "events": [
-            {**_event_out(e, ids), "main_participants": [names[k] for k in keys if k in names]}
+            {**event_out(e, ids), "main_participants": [names[k] for k in keys if k in names]}
             for e, keys in shown
         ],
         "total_events": len(rows),

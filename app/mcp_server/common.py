@@ -51,6 +51,9 @@ def entity_out(e: GraphEntity) -> dict[str, Any]:
 def relation_out(rel: GraphRelation, origin: str) -> dict[str, Any]:
     """An edge seen from `origin`: 'out' if origin is the source, else 'in'."""
     return {
+        "id": rel.id,
+        "src_key": rel.src,
+        "dst_key": rel.dst,
         "rel": rel.rel,
         "direction": "out" if rel.src == origin else "in",
         "description": short(rel.description),

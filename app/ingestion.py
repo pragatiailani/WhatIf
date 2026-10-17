@@ -1,4 +1,5 @@
-"""Ingestion pipeline: parsed PDF -> chunks -> page graphs -> merged graph -> FalkorDB.
+"""Ingestion pipeline: parsed PDF -> chunks -> page graphs -> merged graph -> FalkorDB ->
+communities -> embeddings.
 
 Runs in the background after an upload. Every step is resumable: chunks are written once, finished
 page graphs and merge nodes are skipped, and publish replaces the canon graph. So rerunning a
@@ -8,6 +9,8 @@ failed book picks up where it stopped.
 import logging
 import time
 
+from app import retrieval
+from app.communities import build_communities
 from app.constants import EXTRACTION_ATTEMPTS, MERGE_ATTEMPTS
 from app.extraction.runner import generate_page_graphs
 from app.logging_config import Timer, fields
@@ -25,7 +28,7 @@ _DETAIL = {
     "parsing": "Reading the pages…",
     "extracting": "Finding characters, places and events…",
     "merging": "Weaving page graphs into one story…",
-    "indexing": "Writing the story graph…",
+    "indexing": "Writing the story graph and its summaries…",
     "ready": "The story graph is ready.",
 }
 
@@ -45,6 +48,12 @@ def progress(book: Book) -> dict:
         (book.error or "Ingestion failed.") if book.status == "failed" else _DETAIL[book.status]
     )
     return {"book_id": book.id, "status": book.status, "progress": min(done, 1.0), "detail": detail}
+
+
+def _n(report: object, name: str) -> int:
+    """How many items a pass report lists under `name`, or 0 if it does not track that. Log lines
+    must never be able to fail an ingestion."""
+    return len(getattr(report, name, None) or ())
 
 
 def _stage(book_id: str, status: BookStatus) -> None:
@@ -76,8 +85,8 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
             blocked += len(extracted.blocked)
             log.info(
                 "extraction pass %d/%d book=%s done=%d skipped=%d failed=%d blocked=%d dropped=%d in %dms",
-                attempt, EXTRACTION_ATTEMPTS, book_id, len(extracted.done), len(extracted.skipped),
-                len(extracted.failed), len(extracted.blocked), extracted.dropped, t.ms,
+                attempt, EXTRACTION_ATTEMPTS, book_id, _n(extracted, "done"), _n(extracted, "skipped"),
+                _n(extracted, "failed"), _n(extracted, "blocked"), getattr(extracted, "dropped", 0), t.ms,
             )  # fmt: skip
             if not extracted.failed:
                 break
@@ -97,8 +106,8 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
                 merged = merge_page_graphs(book_id)  # skips nodes already merged
             log.info(
                 "merge pass %d/%d book=%s merged=%d skipped=%d failed=%d llm_calls=%d in %dms",
-                attempt, MERGE_ATTEMPTS, book_id, len(merged.merged), len(merged.skipped),
-                len(merged.failed), merged.llm_calls, t.ms,
+                attempt, MERGE_ATTEMPTS, book_id, _n(merged, "merged"), _n(merged, "skipped"),
+                _n(merged, "failed"), getattr(merged, "llm_calls", 0), t.ms,
             )  # fmt: skip
             if merged.root is not None:
                 break
@@ -111,6 +120,14 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
         _stage(book_id, "indexing")
         published = publish_book_graph(book_id)
         books.update_stats(book_id, published)
+        try:
+            books.update_stats(book_id, build_communities(book_id))
+        except Exception:  # big-picture questions fall back to chapters and the graph
+            log.exception("building communities for book %s failed", book_id)
+        try:
+            books.update_stats(book_id, retrieval.index_book(book_id))
+        except Exception:  # the book still works with keyword search; re-index it later
+            log.exception("embedding book %s failed; it has keyword search only", book_id)
         books.set_status(book_id, "ready")
         log.info(
             "ingestion finished book=%s %s in %.1fs", book_id, fields(published), time.perf_counter() - started

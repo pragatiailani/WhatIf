@@ -6,7 +6,9 @@ import type {
   Message,
   Session,
   StoryGraph,
+  Reasoning,
   Storyline,
+  TraceStep,
   User,
   Visibility,
 } from "./types";
@@ -16,6 +18,8 @@ import { httpApi } from "./http";
 /** Streamed while a chat turn is being produced. */
 export type ChatEvent =
   | { type: "phase"; label: string }
+  | { type: "step"; step: TraceStep }
+  | { type: "reasoning"; reasoning: Reasoning }
   | { type: "token"; text: string };
 
 export interface Api {
@@ -23,6 +27,9 @@ export interface Api {
   signUp(name: string, email: string, password: string): Promise<Session>;
   signIn(email: string, password: string): Promise<Session>;
   me(token: string): Promise<User>;
+  /** Saves the user's Inkitt access token after Inkitt accepts it. */
+  setInkittToken(token: string): Promise<User>;
+  clearInkittToken(): Promise<User>;
 
   // books
   listPublicBooks(): Promise<Book[]>;

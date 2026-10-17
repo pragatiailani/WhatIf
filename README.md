@@ -100,8 +100,8 @@ Open or resume a session (`thread_id`), then save the user message. If the histo
 | Storyline (read) | `get_dependents`, `get_state_at`, `read_chapter` |
 | Storyline (draft) | `start_draft`, `get_open_items`, `resolve_item`, `verify_draft`, `commit_draft`, `discard_draft`, `generate_passage` |
 
-Agents live in `app/agents` and are looked up by name: `await get_agent("whatif").run(book_id, session_id, question)`.
-`whatif` is the one agent behind every chat: a single ReAct agent (`langchain.agents.create_agent`) bound to all of these tools plus its planning tools (`write_todos`, `read_todos`, `think_tool`). The conversation is
+Agents live in `app/agents` and are looked up by name: `await get_agent("book_qa").run(book_id, session_id, question)`.
+`book_qa` is the one agent behind every chat: a single ReAct agent (`langchain.agents.create_agent`) bound to all of these tools plus its planning tools (`write_todos`, `read_todos`, `think_tool`). The conversation is
 checkpointed to MongoDB (`checkpoints`, `checkpoint_writes`), one thread per chat session, and older turns are
 summarised past `CHAT_HISTORY_BUDGET`. Each question and answer is also saved to `messages` with its citations.
 **What-if editing.** The same agent handles it, in the same chat, when the reader asks for a change: no mode to pick and no hand-off. `start_draft` queues every later event and relation involving the changed characters (the ripple queue); `resolve_item` keeps, hides or rewrites each one and can pull more characters in; `verify_draft` runs code checks plus an LLM continuity check per chapter; `commit_draft` is refused unless the latest verification passed on the current draft. Ops are logged in `storyline_ops`; storyline graph items carry `sid` and `created_by_op`, and hidden items come from the op log.
@@ -312,6 +312,6 @@ All backend logs go to stderr (and to `LOG_FILE` if set) in one format:
 `time LEVEL logger [request-id] message`. Set `LOG_LEVEL=DEBUG` to also see graph queries and per-node merge steps.
 
 - **Requests:** one line each with status and duration (`app.request`). Every response carries an `X-Request-ID`; quote it when reporting a problem. Background work started by a request (ingestion) keeps its id.
-- **Ingestion, merge, storylines, agent:** stage changes, counts and timings (`app.ingestion`, `app.merge.*`, `app.storyline.*`, `app.agents.whatif`), plus a line per agent tool call (`app.agent.tools`) and per model call with tokens (`app.llm`).
+- **Ingestion, merge, storylines, agent:** stage changes, counts and timings (`app.ingestion`, `app.merge.*`, `app.storyline.*`, `app.agents.book_qa`), plus a line per agent tool call (`app.agent.tools`) and per model call with tokens (`app.llm`).
 - **Tool server:** runs as its own process and logs to stderr, which shows up in the API's console; it records tracebacks for crashes (`app.mcp`).
 - **Never logged:** passwords, tokens, API keys, emails, prompts or book text. Long argument values are clipped.

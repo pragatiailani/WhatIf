@@ -71,7 +71,7 @@ def test_noisy_libraries_are_quiet_unless_debugging(clean_logging, monkeypatch):
 
 
 def test_file_logging_writes_the_request_id(clean_logging, monkeypatch, tmp_path):
-    path = tmp_path / "nested" / "whatif.log"
+    path = tmp_path / "nested" / "book_qa.log"
     monkeypatch.setattr(logging_config, "_settings", lambda: ("INFO", str(path)))
     setup_logging("api")
     token = request_id.set("req-42")
@@ -308,6 +308,19 @@ def test_the_whole_module_set_has_loggers():
 
     for name in ("app.ingestion", "app.extraction.runner", "app.merge.runner", "app.merge.publish",
                  "app.storyline.draft", "app.storyline.verify", "app.storyline.prose",
-                 "app.repo.graph", "app.agents.whatif", "app.api.books", "app.api.auth"):  # fmt: skip
+                 "app.repo.graph", "app.agents.book_qa", "app.api.books", "app.api.auth"):  # fmt: skip
         assert importlib.import_module(name).log.name == name
 
+
+
+def test_a_report_missing_fields_never_fails_an_ingestion(mongo, monkeypatch):
+    """The log lines read the extraction and merge reports; a thinner report must not break them."""
+    book = books.create_book(Book(title="Kim", content_hash="h"))
+    monkeypatch.setattr(ingestion.chunks, "count_chunks", lambda _id: 3)
+    monkeypatch.setattr(ingestion, "generate_page_graphs", lambda _id: SimpleNamespace(blocked=[], failed={}))
+    monkeypatch.setattr(ingestion, "merge_page_graphs", lambda _id: SimpleNamespace(root=object(), failed={}))
+    monkeypatch.setattr(ingestion, "publish_book_graph", lambda _id: {"entities": 1})
+    monkeypatch.setattr(ingestion, "build_communities", lambda _id: {})
+    monkeypatch.setattr(ingestion.retrieval, "index_book", lambda _id: {})
+    ingestion.ingest_book(book.id, parsed())
+    assert books.get_book(book.id).status == "ready"

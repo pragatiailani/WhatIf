@@ -7,6 +7,8 @@ BOOKS_COLLECTION = "books"
 CHUNKS_COLLECTION = "chunks"
 MENTIONS_COLLECTION = "mentions"
 GRAPH_LEVELS_COLLECTION = "graph_levels"
+INKITT_STORIES_COLLECTION = "inkitt_stories"
+VECTORS_COLLECTION = "vectors"
 
 # --- Auth ----------------------------------------------------------------
 
@@ -121,14 +123,61 @@ TOOL_DESCRIPTION_CHARS = 400  # entity description length in tool results
 TOOL_MAX_NEIGHBORS = 50  # get_neighbors / get_relations
 TOOL_BFS_BATCH = 100  # nodes per expand() query in find_path
 
+# --- Communities -----------------------------------------------------------
+
+# Leiden (modularity) over the entity graph: story relations plus co-appearance in events.
+COMMUNITY_SEED = 42  # fixed, so a rebuild of the same graph finds the same groups
+COMMUNITY_EVENT_WEIGHT = 0.5  # edge weight added per event two entities both take part in
+COMMUNITY_MIN_SIZE = 3  # smaller groups get no summary
+COMMUNITY_MAX = 40  # largest groups kept per book (one LLM summary each)
+# What a community summary prompt shows, most important first.
+COMMUNITY_PROMPT_ENTITIES = 25
+COMMUNITY_PROMPT_RELATIONS = 40
+COMMUNITY_PROMPT_EVENTS = 20
+OVERVIEW_CID = 0  # the level-1 community: the whole book, summarised from the groups
+
+# --- Retrieval (embeddings) ------------------------------------------------
+
+EMBED_BATCH = 64  # texts per embedding request
+EMBED_MAX_CHARS = 8000  # longer texts are cut before embedding (model limit is ~8k tokens)
+RRF_K = 60  # reciprocal rank fusion: score = sum of 1 / (RRF_K + rank) over the rankings
+SEMANTIC_CANDIDATES = 30  # vector hits per kind that go into fusion
+# Lowest cosine similarity for an entity found only by meaning (no name match) in find_entities.
+SEMANTIC_ENTITY_MIN_SCORE = 0.3
+RETRIEVE_SEEDS = 5  # retrieve: entities the query is about
+RETRIEVE_RELATIONS = 15  # retrieve: graph edges around the seeds
+RETRIEVE_EVENTS = 5  # retrieve: events closest to the query
+RETRIEVE_COMMUNITIES = 2  # retrieve: communities the seeds belong to
+RETRIEVE_COMMUNITY_CHARS = 600  # retrieve: summary length per community
+RETRIEVE_PASSAGE_CHARS = 1500  # retrieve: text per passage; get_chunks has the full page
+
 # --- Book Q&A agent ----------------------------------------------------------
 
 DEFAULT_CHAT_HISTORY_BUDGET = 6000  # tokens of conversation before older turns are summarised
 HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
 MAX_MODEL_CALLS = 80  # model calls per message (tool loop bound); a draft queue needs many
 MAX_CITATIONS = 8
+CITATION_QUOTE_CHARS = 240  # excerpt shown with each citation
+TRACE_FOUND_NAMES = 4  # names listed per kind in a trace step's "found" line
+TRACE_TEXT_CHARS = 160  # longest plain-text or error result shown in a trace step
+REASONING_MAX_FACTS = 40  # relations offered to the model when explaining an answer
 # Tools the model may call; the conversation is already in its context.
 AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
+
+# --- Inkitt --------------------------------------------------------------
+
+INKITT_MCP_URL = "https://mcp-server.inkitt.com/mcp"
+# Inkitt tools the chat agent may call. The server also has delete and customer-support (`cs_*`)
+# tools; those are never loaded.
+INKITT_AGENT_TOOLS = frozenset(
+    {
+        "get_settings", "list_stories", "get_story", "update_story", "list_chapters",
+        "get_chapter", "publish_chapter", "unpublish_chapter", "publish_all_chapters",
+        "unpublish_all_chapters", "get_cover", "update_cover",
+    }
+)  # fmt: skip
+INKITT_SUMMARY_CHARS = 2205
+INKITT_CHAPTER_NAME_CHARS = 200
 TITLE_CHARS = 60
 
 # --- Storylines ------------------------------------------------------------------

@@ -10,7 +10,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import InMemorySaver
 
 import app.agents as agents
-from app.agents import whatif
+from app.agents import book_qa
 from app.agents.tools import hide_args
 from app.config import get_settings
 from app.repo import sessions
@@ -69,10 +69,10 @@ def env(mongo, monkeypatch):
     seen_book_ids.clear()
 
     @asynccontextmanager
-    async def fake_open_tools(book_id, session_id):
+    async def fake_open_tools(book_id, session_id, user_id=None, storyline_id=None):
         yield make_tools()
 
-    monkeypatch.setattr(whatif, "open_tools", fake_open_tools)
+    monkeypatch.setattr(book_qa, "open_tools", fake_open_tools)
     yield
     get_settings.cache_clear()
 
@@ -82,7 +82,7 @@ def new_session():
 
 
 async def ask(session, question, llm, saver=None):
-    run = agents.get_agent("whatif").run
+    run = agents.get_agent("book_qa").run
     return await run("book1", session.id, question, llm=llm, checkpointer=saver)
 
 
@@ -96,7 +96,8 @@ async def test_answers_with_citations_and_saves_messages(env):
 
     assert out["answer"].startswith("He left because of a debt")
     assert out["citations"] == [{"chunk_id": "c1", "chapter": "Chapter 1", "page_start": 3,
-                                 "page_end": 3, "seq": 0}]
+                                 "page_end": 3, "seq": 0,
+                                 "quote": "Ravi left Delhi because of the debt."}]
     assert seen_book_ids == ["book1"]  # the model's book_id was replaced
     stored = sessions.last_messages(s.id, 10)
     assert [m.role for m in stored] == ["user", "assistant"]
@@ -136,19 +137,19 @@ async def test_citations_only_from_this_question(env):
 
 async def test_unknown_session_or_wrong_book(env):
     with pytest.raises(ValueError, match="unknown session"):
-        await agents.get_agent("whatif").run("book1", "nope", "hi", llm=fake())
+        await agents.get_agent("book_qa").run("book1", "nope", "hi", llm=fake())
     s = new_session()
     with pytest.raises(ValueError, match="unknown session"):
-        await agents.get_agent("whatif").run("other-book", s.id, "hi", llm=fake())
+        await agents.get_agent("book_qa").run("other-book", s.id, "hi", llm=fake())
 
 
 def test_registry():
-    assert [a.name for a in agents.list_agents()] == ["whatif"]  # one agent behind every chat
-    assert agents.get_agent("whatif").run is whatif.run
-    with pytest.raises(KeyError, match="available: whatif"):
+    assert [a.name for a in agents.list_agents()] == ["book_qa"]  # one agent behind every chat
+    assert agents.get_agent("book_qa").run is book_qa.run
+    with pytest.raises(KeyError, match="available: book_qa"):
         agents.get_agent("nope")
     with pytest.raises(ValueError, match="already registered"):
-        agents.register_agent("whatif", "again")(lambda: None)
+        agents.register_agent("book_qa", "again")(lambda: None)
 
 
 def test_hide_args_removes_injected_fields_from_the_schema():
@@ -168,8 +169,125 @@ async def test_open_tools_over_stdio_hides_ids(env):
         assert not {"book_id", "session_id"} & set(tool.args_schema["properties"])
 
 
+async def test_stream_yields_phases_tokens_and_done(env):
+    s = new_session()
+    llm = fake(
+        call("get_chunks", {"chunk_ids": ["c1"]}, "t1"),
+        AIMessage(content="Because of a debt (Chapter 1, p. 3)."),
+    )
+    events = [e async for e in book_qa.stream("book1", s.id, "Why?", llm=llm, checkpointer=None)]
+
+    kinds = [k for k, _ in events]
+    assert kinds[0] == "phase" and kinds[-1] == "done"
+    assert ("phase", "Reading the passages…") in events  # the tool call, labelled
+    steps = [v for k, v in events if k == "step"]
+    assert [t["tool"] for t in steps] == ["get_chunks"] and steps == events[-1][1]["trace"]
+    assert "".join(v for k, v in events if k == "token") == "Because of a debt (Chapter 1, p. 3)."
+    done = events[-1][1]
+    assert done["answer"] == "Because of a debt (Chapter 1, p. 3)."
+    assert done["assistant_message"].citations == done["citations"]
+    assert done["user_message"].content == "Why?"
+
+
+def test_graph_refs_from_tool_results():
+    from langchain_core.messages import ToolMessage
+
+    retrieved = json.dumps({
+        "entities": [{"key": "ravi"}],
+        "relations": [{"id": "r1", "src_key": "ravi", "dst_key": "asha"}],
+        "communities": [{"cid": 2}], "passages": [],
+    })
+    neighbors = json.dumps({"entity": {"key": "asha"}, "neighbors": [{"entity": {"key": "meera"}}]})
+    turn = [
+        call("retrieve", {"query": "q"}, "t1"),
+        ToolMessage(content=retrieved, name="retrieve", tool_call_id="t1"),
+        call("get_neighbors", {"entity": "asha"}, "t2"),
+        ToolMessage(content=neighbors, name="get_neighbors", tool_call_id="t2"),
+        ToolMessage(content="boom", name="find_entities", tool_call_id="t3", status="error"),
+        AIMessage(content="done"),
+    ]
+    _, _, trace, refs = book_qa.read_turn(turn)
+    assert refs == {"seeds": ["ravi", "asha"], "expanded": ["ravi", "asha", "meera"],
+                    "edges": ["r1"], "communities": [2]}
+    assert trace[-1]["error"] is True
+
+
+def test_trace_explains_why_and_what_was_found():
+    from langchain_core.messages import ToolMessage
+
+    retrieved = json.dumps({
+        "entities": [{"key": "ravi", "name": "Ravi"}, {"key": "asha", "name": "Asha"}],
+        "relations": [{"id": "r1", "src": "Ravi", "rel": "OWES", "dst": "Asha"}],
+        "events": [{"key": "e1", "summary": "Ravi borrows money", "chunk_id": "c1"}],
+        "passages": [{"chunk_id": "c1", "chapter": "Chapter 1", "page_start": 3}],
+        "communities": [],
+        "semantic": True,
+    })
+    turn = [
+        AIMessage(content="Ravi's debt is the likely reason, so I'll search for it.",
+                  tool_calls=[{"name": "retrieve", "args": {"query": "q"}, "id": "t1"}]),
+        ToolMessage(content=retrieved, name="retrieve", tool_call_id="t1"),
+        AIMessage(content="", tool_calls=[{"name": "find_path", "args": {}, "id": "t2"}]),
+        ToolMessage(content=json.dumps({"found": False, "path": []}), name="find_path", tool_call_id="t2"),
+        AIMessage(content="", tool_calls=[{"name": "get_chunks", "args": {}, "id": "t3"}]),
+        ToolMessage(content="no such chunk", name="get_chunks", tool_call_id="t3", status="error"),
+        AIMessage(content="A debt."),
+    ]
+    _, _, trace, _ = book_qa.read_turn(turn)
+    assert trace[0]["why"] == "Ravi's debt is the likely reason, so I'll search for it."
+    assert trace[0]["found"] == ("2 entities (Ravi, Asha); 1 relations (Ravi OWES Asha); "
+                                 "1 events (Ravi borrows money); 1 passages (Chapter 1, p. 3)")
+    assert trace[1] == {"tool": "find_path", "args": {}, "why": "", "found": "found: no",
+                        "error": False}
+    assert trace[2]["found"] == "Failed: no such chunk" and trace[2]["error"] is True
+
+
+def test_explain_builds_a_checked_chain(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agents.book_qa import explain as ex
+
+    names = {"ravi": "Ravi", "asha": "Asha", "meera": "Meera"}
+    monkeypatch.setattr(ex.graph, "get_entities",
+                        lambda scope, keys: [SimpleNamespace(key=k, name=names[k]) for k in keys])
+    monkeypatch.setattr(ex.graph, "event_participants", lambda scope, keys: {"e1": ["asha", "meera"]})
+    results = [
+        {"relations": [{"id": "r1", "src_key": "ravi", "dst_key": "asha", "rel": "OWES",
+                        "description": "a debt"}],
+         "events": [{"key": "e1", "summary": "Asha calls in the debt", "chapter": "Ch 2", "page": 9}]},
+        {"neighbors": [{"id": "r1", "src_key": "ravi", "dst_key": "asha", "rel": "OWES"}],  # seen again
+         "path": [{"id": "r2", "src_key": "asha", "dst_key": "meera", "rel": "TELLS"}]},
+    ]
+    reply = AIMessage(content="", tool_calls=[{"name": "Reasoning", "id": "x", "args": {
+        "chain": [{"fact": 1, "why": "Ravi owes Asha."}, {"fact": 9, "why": "made up"},
+                  {"fact": 3, "why": "Asha calls it in."}, {"fact": 1, "why": "again"}],
+        "conclusion": "So Ravi left.",
+    }}])
+    llm = fake(reply)
+    out = asyncio.run(ex.explain(llm, "book1", "Why did Ravi leave?", "A debt.", results))
+
+    shown = llm.seen[0][1].content
+    assert "[1] Ravi -OWES-> Asha: a debt" in shown and "[2] Asha -TELLS-> Meera" in shown
+    assert "[3] Event (Ch 2, p. 9) involving Asha, Meera: Asha calls in the debt" in shown
+    # unknown and repeated fact numbers are dropped; links keep the graph ids for the UI
+    assert [(link["kind"], link.get("id") or link.get("key"), link["why"]) for link in out["chain"]] == [
+        ("relation", "r1", "Ravi owes Asha."), ("event", "e1", "Asha calls it in.")]
+    assert out["chain"][0]["src"] == "Ravi" and out["chain"][1]["involves"] == ["asha", "meera"]
+    assert out["conclusion"] == "So Ravi left."
+
+
+def test_explain_without_facts_or_on_failure_is_none(monkeypatch):
+    from app.agents.book_qa import explain as ex
+
+    assert asyncio.run(ex.explain(fake(), "b", "q", "a", [{"passages": []}])) is None
+    monkeypatch.setattr(ex, "_named", lambda book_id, facts: [{**f, "src": "A", "dst": "B"} for f in facts])
+    broken = fake()  # no reply queued: the call raises
+    facts = [{"relations": [{"id": "r1", "src_key": "a", "dst_key": "b", "rel": "KNOWS"}]}]
+    assert asyncio.run(ex.explain(broken, "b", "q", "a", facts)) is None
+
+
 async def test_one_agent_has_the_mcp_tools_and_the_planning_tools():
-    graph = whatif.build_agent(fake(), make_tools())
+    graph = book_qa.build_agent(fake(), make_tools())
     tool_names = {t.name for t in graph.nodes["tools"].bound.tools_by_name.values()}
     assert {"get_chunks", "write_todos", "read_todos", "think_tool"} <= tool_names
 
@@ -178,42 +296,17 @@ def test_a_rewritten_chapter_is_cited_but_an_original_one_is_not():
     rewritten = json.dumps({"source": "storyline", "chunk_id": "p1", "chapter": "Chapter 3",
                             "page_start": 3, "page_end": 4, "text": "..."})  # fmt: skip
     original = json.dumps({"source": "original", "chapter": "Chapter 1", "chunk_ids": ["a"]})
-    assert whatif._citations_from("read_chapter", rewritten) == [
-        {"chunk_id": "p1", "chapter": "Chapter 3", "page_start": 3, "page_end": 4, "seq": None}
+    assert book_qa._citations_from("read_chapter", rewritten) == [
+        {"chunk_id": "p1", "chapter": "Chapter 3", "page_start": 3, "page_end": 4, "seq": None,
+         "storyline_chunk": True, "quote": "..."}  # fmt: skip
     ]
-    assert whatif._citations_from("read_chapter", original) == []
-
-
-def tool_msg(name, payload, status="success"):
-    from langchain_core.messages import ToolMessage
-
-    return ToolMessage(content=json.dumps(payload), name=name, tool_call_id=name, status=status)
-
+    assert book_qa._citations_from("read_chapter", original) == []
 
 def test_route_follows_the_tools_used():
-    assert whatif.route_of([{"tool": "find_entities"}, {"tool": "get_chunks"}]) == "local"
-    assert whatif.route_of([{"tool": "search_communities"}]) == "global"
-    assert whatif.route_of([{"tool": "get_chapter_summary"}, {"tool": "get_chunks"}]) == "global"
-    assert whatif.route_of([{"tool": "find_entities"}, {"tool": "start_draft"}]) == "edit"
-    assert whatif.route_of([{"tool": "generate_passage"}]) == "edit"
-    assert whatif.route_of([]) == "local"
+    assert book_qa.route_of([{"tool": "find_entities"}, {"tool": "get_chunks"}]) == "local"
+    assert book_qa.route_of([{"tool": "search_communities"}]) == "global"
+    assert book_qa.route_of([{"tool": "get_chapter_summary"}, {"tool": "get_chunks"}]) == "global"
+    assert book_qa.route_of([{"tool": "find_entities"}, {"tool": "start_draft"}]) == "edit"
+    assert book_qa.route_of([{"tool": "generate_passage"}]) == "edit"
+    assert book_qa.route_of([]) == "local"
 
-
-def test_retrieval_collects_the_entities_a_turn_touched():
-    from langchain_core.messages import HumanMessage
-
-    messages = [
-        tool_msg("find_entities", {"entities": [{"key": "old|1"}]}),  # an earlier question
-        HumanMessage(content="Who is Ravi connected to?"),
-        tool_msg("find_entities", {"entities": [{"key": "ravi"}, {"key": "asha"}]}),
-        tool_msg("get_neighbors", {"entity": {"key": "ravi"}, "neighbors": [
-            {"hop": 1, "entity": {"key": "meera"}}, {"hop": 2, "entity": {"key": "delhi"}}]}),  # fmt: skip
-        tool_msg("get_relations", {"entity": {"key": "asha"}, "relations": [{"other": {"key": "vik"}}]}),
-        tool_msg("get_timeline", {"entity": {"key": "ravi"}, "events": []}),
-        tool_msg("get_chunks", {"chunks": []}),
-        tool_msg("find_entities", {"entities": [{"key": "ignored"}]}, status="error"),
-    ]
-    out = whatif.read_retrieval(messages)
-    assert out["seeds"] == ["ravi", "asha"]
-    assert out["expanded"] == ["meera", "delhi", "vik"] and out["hops"] == 2
-    assert whatif.read_retrieval([]) == {"seeds": [], "expanded": [], "hops": 0}

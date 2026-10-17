@@ -45,9 +45,10 @@ def list_books(
     user: Annotated[User | None, Depends(optional_user)],
     scope: Literal["public", "mine"] = "public",
 ) -> list[BookOut]:
-    """`public`: the public library. `mine`: the signed-in user's uploads, public or private."""
+    """`public`: the public library, without failed books. `mine`: the signed-in user's uploads,
+    public or private, failed ones included so they can be uploaded again."""
     if scope == "public":
-        return [_out(b) for b in books.list_by_visibility("public")]
+        return [_out(b) for b in books.list_by_visibility("public") if b.status != "failed"]
     if user is None:
         raise HTTPException(401, "sign in required")
     return [_out(b) for b in books.list_owned_books(user.id)]

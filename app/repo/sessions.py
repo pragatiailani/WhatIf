@@ -10,6 +10,9 @@ from app.repo.models import ChatSession, Message, Note, utcnow
 def ensure_indexes() -> None:
     collection(MESSAGES_COLLECTION).create_index([("session_id", ASCENDING), ("seq", ASCENDING)])
     collection(NOTES_COLLECTION).create_index([("session_id", ASCENDING), ("created_at", ASCENDING)])
+    collection(SESSIONS_COLLECTION).create_index(
+        [("user_id", ASCENDING), ("book_id", ASCENDING), ("storyline_id", ASCENDING)]
+    )
 
 
 def create_session(session: ChatSession) -> ChatSession:
@@ -20,6 +23,24 @@ def create_session(session: ChatSession) -> ChatSession:
 def get_session(session_id: str) -> ChatSession | None:
     doc = collection(SESSIONS_COLLECTION).find_one({"_id": session_id})
     return ChatSession.model_validate(doc) if doc else None
+
+
+def find_book_chat(
+    user_id: str, book_id: str, storyline_id: str | None = None
+) -> ChatSession | None:
+    """The user's chat on a book (canon, or one storyline): their oldest session there. The web
+    app keeps one conversation per book; `/sessions` can open more."""
+    key = {"user_id": user_id, "book_id": book_id, "storyline_id": storyline_id}
+    doc = collection(SESSIONS_COLLECTION).find_one(key, sort=[("created_at", ASCENDING)])
+    return ChatSession.model_validate(doc) if doc else None
+
+
+def book_chat(user_id: str, book_id: str, storyline_id: str | None = None) -> ChatSession:
+    """`find_book_chat`, creating the session on first use."""
+    found = find_book_chat(user_id, book_id, storyline_id)
+    return found or create_session(
+        ChatSession(user_id=user_id, book_id=book_id, storyline_id=storyline_id)
+    )
 
 
 def set_summary(session_id: str, summary: str) -> None:

@@ -6,6 +6,7 @@ change, and a verification only counts for the version it ran on.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
@@ -288,3 +289,32 @@ def list_passages(storyline_id: str) -> list[StorylineChunk]:
 def delete_passages_after(storyline_id: str, op_seq: int) -> None:
     """Drop passages written after `op_seq`, i.e. during a draft that is being discarded."""
     _passages().delete_many({"storyline_id": storyline_id, "op_seq": {"$gt": op_seq}})
+
+
+# --- publishing ----------------------------------------------------------
+
+
+class StorylinesUnavailable(Exception):
+    """A storyline cannot be read as a book right now (an open draft, or chapters not written)."""
+
+
+@dataclass(frozen=True)
+class StorylineText:
+    """A storyline as the Inkitt publisher reads it."""
+
+    id: str
+    book_id: str  # the base book
+    owner_id: str
+    title: str
+    # Title of the first base-book chapter the storyline changes: base chapters before it are kept
+    # as they are. None keeps every base chapter (nothing in the storyline changes the book).
+    diverges_at: str | None
+    chapters: list[tuple[str, str]] = field(default_factory=list)  # (title, text) from there on
+
+
+def get_storyline_text(storyline_id: str) -> StorylineText | None:
+    """The storyline's metadata and its chapters from the point it diverges, or None if there is
+    no such storyline. Raises `StorylinesUnavailable` if it cannot be read yet."""
+    from app.storyline.publish import storyline_text  # the engine sits above the repo layer
+
+    return storyline_text(storyline_id)

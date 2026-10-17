@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agents import whatif
-from app.agents.whatif import build_agent
+from app.agents import book_qa
+from app.agents.book_qa import build_agent
 from app.agents.planning import PLANNING_TOOLS, read_todos, think_tool, write_todos
 
 TODOS = [
@@ -103,7 +103,7 @@ async def test_the_todo_list_persists_across_turns_of_a_chat():
 def test_the_prompt_covers_every_tool_the_agent_has():
     import asyncio
 
-    from app.agents.whatif.prompt import SYSTEM_PROMPT
+    from app.agents.book_qa.prompt import SYSTEM_PROMPT
     from app.constants import AGENT_EXCLUDED_TOOLS
     from app.mcp_server.server import mcp
 
@@ -158,50 +158,16 @@ async def test_a_tool_that_raises_is_logged_and_still_raises(caplog):
     assert any("tool=crash failed" in r.getMessage() for r in caplog.records)
 
 
-# --- progress ------------------------------------------------------------
+# --- progress labels -----------------------------------------------------
 
 
-async def test_the_agent_reports_what_it_is_about_to_do():
-    from app.agents.progress import LABELS, label_for
-
-    seen = []
-    graph = build_agent(
-        Scripted(replies=[
-            call("write_todos", {"todos": TODOS, "description": "plan"}),
-            call("think_tool", {"reflection": "ok"}, "c2"),
-            AIMessage(content="done"),
-        ]),
-        [],
-        None,
-        on_progress=seen.append,
-    )  # fmt: skip
-    await graph.ainvoke({"messages": [HumanMessage(content="go")]})
-    assert seen == [LABELS["write_todos"], LABELS["think_tool"]]
-    assert label_for("some_new_tool") == "Working on it…"
-
-
-async def test_a_broken_progress_callback_does_not_break_the_agent(caplog):
-    def broken(label):
-        raise RuntimeError("client went away")
-
-    graph = build_agent(
-        Scripted(replies=[call("read_todos", {"description": "x"}), AIMessage(content="fine")]),
-        [],
-        None,
-        on_progress=broken,
-    )
-    result = await graph.ainvoke({"messages": [HumanMessage(content="go")]})
-    assert result["messages"][-1].content == "fine"
-    assert any("progress callback failed" in r.getMessage() for r in caplog.records)
-
-
-def test_every_tool_has_a_progress_label():
+def test_every_tool_has_a_progress_phase():
     import asyncio
 
-    from app.agents.progress import LABELS
     from app.constants import AGENT_EXCLUDED_TOOLS
     from app.mcp_server.server import mcp
 
     names = {t.name for t in asyncio.run(mcp.list_tools())} - AGENT_EXCLUDED_TOOLS
     names |= {t.name for t in PLANNING_TOOLS}
-    assert not names - set(LABELS), f"no progress label for: {sorted(names - set(LABELS))}"
+    missing = sorted(names - set(book_qa.PHASES))
+    assert not missing, f"the reading page would show 'Working…' for: {missing}"

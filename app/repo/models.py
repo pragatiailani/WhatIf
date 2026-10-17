@@ -34,6 +34,7 @@ class User(_Doc):
     name: str
     email: str  # lower-cased
     password_hash: str
+    inkitt_pat: str | None = None  # Inkitt access token, encrypted with `app.crypto`
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -98,8 +99,11 @@ class Message(_Doc):
     content: str
     citations: list[dict[str, Any]] = Field(default_factory=list)  # {chunk_id, page, chapter}
     trace: list[dict[str, Any]] = Field(default_factory=list)  # tool calls behind an answer
-    route: str | None = None  # local, global or edit: how the answer was produced
-    retrieval: dict[str, Any] = Field(default_factory=dict)  # entity keys the answer touched
+    # Graph nodes the answer's tools returned: {seeds, expanded, edges, communities}, for the UI.
+    graph_refs: dict[str, list] = Field(default_factory=dict)
+    # Why the answer holds: {chain: [relation + {src, dst, why}], conclusion}; None without one.
+    reasoning: dict[str, Any] | None = None
+    route: str | None = None  # "local", "global" or "edit": how the answer was produced
     diff: dict[str, Any] | None = None  # what an editing turn changed in the storyline
     created_at: datetime = Field(default_factory=utcnow)
 

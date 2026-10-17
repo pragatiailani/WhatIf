@@ -17,7 +17,7 @@ from app.logging_config import setup_logging
 from app.repo import books, ensure_indexes, sessions
 from app.repo.models import Book, ChatSession
 
-AGENT = "whatif"
+AGENT = "book_qa"
 DIM, RESET = "\033[2m", "\033[0m"
 
 

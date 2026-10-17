@@ -97,14 +97,9 @@ class MemGraph:
         return [(r, self.entities[r.dst if r.src == key else r.src]) for r in self.relations_in(scope)
                 if key in (r.src, r.dst)][:limit]  # fmt: skip
 
-    def all_entities(self, scope):
-        return list(self.entities.values())
-
-    def all_events(self, scope):
-        return [(e, [k for k, _ in self.involves.get(e.key, [])]) for e in self.events_in(scope)]
-
-    def all_relations(self, scope):
-        return self.relations_in(scope)
+    def book_graph(self, scope):
+        events = [(e, [k for k, _ in self.involves.get(e.key, [])]) for e in self.events_in(scope)]
+        return list(self.entities.values()), events, self.relations_in(scope)
 
     def chapter_events(self, scope, chapter):
         return [(e, [k for k, _ in self.involves.get(e.key, [])])
@@ -160,7 +155,7 @@ def world(mongo, monkeypatch):
     for name in ("get_event", "get_entities", "get_entity", "entity_index", "event_links",
                  "events_involving", "relations_involving", "entity_events", "entity_relations",
                  "chapter_events", "upsert_events", "upsert_event_links", "delete_storyline_items",
-                 "all_entities", "all_events", "all_relations"):  # fmt: skip
+                 "book_graph"):  # fmt: skip
         monkeypatch.setattr(graph, name, getattr(mem, name))
     judge = FakeJudge()
     monkeypatch.setattr(tools, "get_chat_model", lambda: judge)

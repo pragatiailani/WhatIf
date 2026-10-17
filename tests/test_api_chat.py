@@ -24,7 +24,11 @@ def client(mongo, monkeypatch):
 
 
 def test_chat_flow(client):
-    book = books.create_book(Book(title="Kim", content_hash="h", status="ready"))
+    book = books.create_book(
+        Book(title="Kim", content_hash="h", status="ready", owner_id="u1", visibility="public")
+    )
+    # An uploaded (owned) public book is listed: no other router may shadow GET /books.
+    assert [b["id"] for b in client.get("/books").json()] == [book.id]
 
     created = client.post("/sessions", json={"book_id": book.id})
     assert created.status_code == 201
@@ -32,7 +36,7 @@ def test_chat_flow(client):
 
     reply = client.post(f"/sessions/{sid}/chat", json={"question": "Why did Ravi leave?"})
     assert reply.json() == {"answer": "A debt.", "citations": [{"chunk_id": "c1"}],
-                            "trace": [{"tool": "get_chunks"}]}
+                            "trace": [{"tool": "get_chunks"}], "actions": []}
     assert client.asked == [(book.id, sid, "Why did Ravi leave?")]
 
     sessions.add_message(Message(session_id=sid, role="user", content="hi"))

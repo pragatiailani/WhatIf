@@ -17,6 +17,8 @@ export interface User {
   name: string;
   email: string;
   created_at: string;
+  /** an Inkitt access token is saved for this user */
+  inkitt_connected?: boolean;
 }
 
 export interface Session {
@@ -145,7 +147,28 @@ export interface RetrievalTrace {
   edges: string[]; // relation ids walked
   hops: number;
   communities: number[]; // global search
-  steps: { label: string; detail: string }[];
+  steps: TraceStep[];
+  /** why the answer holds: the graph facts it rests on, in order; null when nothing backs it */
+  reasoning?: Reasoning | null;
+}
+
+/** One fact in an answer's reasoning, as stored in the graph. */
+export type ReasoningLink =
+  | { kind: "relation"; id: string; src_key: string; dst_key: string; src: string; dst: string; rel: string; description: string; why: string }
+  | { kind: "event"; key: string; summary: string; chapter: string | null; page: number | null; involves: string[]; names: string[]; why: string };
+
+export interface Reasoning {
+  chain: ReasoningLink[];
+  conclusion: string;
+}
+
+/** One thing the agent did on the way to an answer. */
+export interface TraceStep {
+  label: string;
+  detail: string; // the tool's arguments
+  tool?: string;
+  why?: string; // what the agent was looking for, in its words
+  found?: string; // what came back
 }
 
 /** What a storyline edit changed. */
@@ -173,8 +196,12 @@ export interface Message {
 export interface ChatTurn {
   user: Message;
   assistant: Message;
-  /** graph after the turn; changed only by edits */
-  graph: StoryGraph;
+  /** graph after the turn; sent only when the turn changed it (storyline edits) */
+  graph?: StoryGraph;
   /** null when chatting with canon; a new storyline when an edit is made from canon */
   storyline: Storyline | null;
+  /** things the UI should do after the turn, e.g. ask for the user's Inkitt token */
+  actions?: ChatAction[];
 }
+
+export type ChatAction = "inkitt_token_required";

@@ -3,6 +3,7 @@ import { Route, Routes, useLocation } from "react-router-dom";
 import { AuthProvider, RequireAuth } from "./auth/AuthContext";
 import { Ambient } from "./components/Ambient";
 import { Navbar } from "./components/Navbar";
+import { IngestionProvider } from "./lib/ingestion";
 import { ToastProvider } from "./lib/ui";
 import Landing from "./pages/Landing";
 import AuthPage from "./pages/AuthPage";
@@ -21,6 +22,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
+        <IngestionProvider>
         <Ambient />
         <div className="flex min-h-full flex-col">
           <Navbar />
@@ -39,6 +41,7 @@ export default function App() {
             </Routes>
           </AnimatePresence>
         </div>
+        </IngestionProvider>
       </ToastProvider>
     </AuthProvider>
   );

@@ -49,6 +49,17 @@ def set_status(book_id: str, status: BookStatus, error: str | None = None) -> No
     )
 
 
+def fail_unfinished(error: str) -> int:
+    """Mark every book still mid-ingestion as failed; returns how many. Ingestion runs in-process,
+    so after a restart nothing is working on them, and only a failed book is ingested again."""
+    unfinished = ["queued", "parsing", "extracting", "merging", "indexing"]
+    result = _col().update_many(
+        {"status": {"$in": unfinished}},
+        {"$set": {"status": "failed", "error": error, "updated_at": utcnow()}},
+    )
+    return result.modified_count
+
+
 def update_stats(book_id: str, stats: dict[str, int]) -> None:
     """Merge `stats` into the book's stats (existing keys are overwritten)."""
     fields = {f"stats.{k}": v for k, v in stats.items()}
@@ -60,3 +71,8 @@ def list_books(owner_id: str | None = None) -> list[Book]:
     owners = [None, owner_id] if owner_id else [None]
     cursor = _col().find({"owner_id": {"$in": owners}}).sort("created_at", -1)
     return [Book.model_validate(d) for d in cursor]
+
+
+def list_all() -> list[Book]:
+    """Every book, catalog and uploads, newest first (for maintenance scripts)."""
+    return [Book.model_validate(d) for d in _col().find().sort("created_at", -1)]
