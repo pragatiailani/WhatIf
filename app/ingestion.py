@@ -5,7 +5,7 @@ page graphs and merge nodes are skipped, and publish replaces the canon graph. S
 failed book picks up where it stopped.
 """
 
-from app.constants import EXTRACTION_ATTEMPTS
+from app.constants import EXTRACTION_ATTEMPTS, MERGE_ATTEMPTS
 from app.extraction.runner import generate_page_graphs
 from app.merge.publish import publish_book_graph
 from app.merge.runner import merge_page_graphs, tree_height
@@ -69,9 +69,15 @@ def ingest_book(book_id: str, parsed: ParsedBook) -> None:
             books.update_stats(book_id, {"blocked_pages": blocked})
 
         books.set_status(book_id, "merging")
-        merged = merge_page_graphs(book_id)
-        if merged.root is None:
-            raise RuntimeError(f"merge failed at {len(merged.failed)} node(s)")
+        for _ in range(MERGE_ATTEMPTS):
+            merged = merge_page_graphs(book_id)  # skips nodes already merged
+            if merged.root is not None:
+                break
+        else:
+            node, error = next(iter(merged.failed.items()))
+            raise RuntimeError(
+                f"merge failed at {len(merged.failed)} node(s), e.g. node {node}: {error}"
+            )
 
         books.set_status(book_id, "indexing")
         books.update_stats(book_id, publish_book_graph(book_id))
