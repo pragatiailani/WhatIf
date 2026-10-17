@@ -227,9 +227,25 @@ const impl: Api = {
     return u;
   },
 
+  async setInkittToken(token) {
+    await latency();
+    const u = db.users.find((x) => x.id === requireUser().id)!;
+    if (!/^ink_\w{16,}$/.test(token)) throw new Error("Inkitt did not accept that token. Check it and try again.");
+    u.inkitt_connected = true;
+    save();
+    return currentUser()!;
+  },
+
+  async clearInkittToken() {
+    const u = db.users.find((x) => x.id === requireUser().id)!;
+    u.inkitt_connected = false;
+    save();
+    return currentUser()!;
+  },
+
   async listPublicBooks() {
     await latency();
-    return db.books.filter((b) => b.visibility === "public").map(publicBook);
+    return db.books.filter((b) => b.visibility === "public" && b.status !== "failed").map(publicBook);
   },
 
   async listMyBooks() {
@@ -409,6 +425,20 @@ const impl: Api = {
     let storyline = sid ? findStoryline(sid) : null;
     const route = classify(text, !!storyline);
     const userMsg: Message = { id: "m-" + id(), role: "user", content: text, created_at: now() };
+
+    if (/\binkitt\b/i.test(text)) {
+      onEvent({ type: "phase", label: "Checking your Inkitt connection…" });
+      await wait(500);
+      const content = u.inkitt_connected
+        ? storyline
+          ? `(Demo) I would send “${storyline.title}” to Inkitt now: the original chapters up to where it diverges, then your new ones, all as drafts. Nothing goes live until you say so.`
+          : "(Demo) I would send this book to Inkitt now, one draft chapter per book chapter. Nothing goes live until you say so."
+        : "To publish on Inkitt I need your Inkitt access token. Paste it in the window that just opened, and I'll carry on.";
+      await streamText(content, onEvent);
+      const assistant: Message = { id: "m-" + id(), role: "assistant", content, created_at: now() };
+      const turn = persist(u.id, bookId, storyline?.id ?? null, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
+      return u.inkitt_connected ? turn : { ...turn, actions: ["inkitt_token_required"] };
+    }
 
     if (route === "edit") {
       onEvent({ type: "phase", label: "Parsing your what-if into ops…" });

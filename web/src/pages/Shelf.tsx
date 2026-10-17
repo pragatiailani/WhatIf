@@ -7,6 +7,7 @@ import { resetMockData } from "../api/mock/server";
 import type { Book, Storyline } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { BookCover } from "../components/BookCover";
+import { useIngestion } from "../lib/ingestion";
 import { Skeleton } from "../components/Loaders";
 import { StorylineCard, useFork } from "../components/StorylineCard";
 import { Badge, Button, Empty, Page } from "../components/ui";
@@ -17,6 +18,7 @@ export default function Shelf() {
   const [lines, setLines] = useState<Storyline[] | null>(null);
   const [uploads, setUploads] = useState<Book[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
+  const { progressOf } = useIngestion();
 
   useEffect(() => {
     api.listMyStorylines().then(setLines);
@@ -63,17 +65,26 @@ export default function Shelf() {
         <>
           <div className="flourish mb-6 mt-16 font-display text-2xl">Your uploads</div>
           <div className="flex flex-wrap gap-6">
-            {uploads.map((b) => (
-              <motion.div key={b.id} whileHover={{ y: -4 }}>
-                <Link to={`/books/${b.id}`} className="block">
-                  <BookCover book={b} size="sm" />
-                  <div className="mt-2 flex gap-1">
-                    <Badge tone={b.status === "ready" ? "sage" : "amber"}>{b.status}</Badge>
-                    <Badge tone="mute">{b.visibility}</Badge>
-                  </div>
-                </Link>
-              </motion.div>
-            ))}
+            {uploads.map((b) => {
+              const live = progressOf(b.id);
+              const status = live?.status ?? b.status;
+              const working = status !== "ready" && status !== "failed";
+              const hint = status === "failed" ? (live?.detail ?? b.error ?? undefined) : live?.detail;
+              return (
+                <motion.div key={b.id} whileHover={{ y: -4 }}>
+                  <Link to={`/books/${b.id}`} className="block">
+                    <BookCover book={b} size="sm" />
+                    <div className="mt-2 flex gap-1" title={hint}>
+                      <Badge tone={status === "ready" ? "sage" : status === "failed" ? "rose" : "amber"}>
+                        {status}
+                        {working && live && live.progress > 0 && ` ${Math.round(live.progress * 100)}%`}
+                      </Badge>
+                      <Badge tone="mute">{b.visibility}</Badge>
+                    </div>
+                  </Link>
+                </motion.div>
+              );
+            })}
           </div>
         </>
       )}

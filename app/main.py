@@ -9,15 +9,22 @@ from app.api import chat, auth, books
 
 log = logging.getLogger(__name__)
 
+INTERRUPTED_ERROR = (
+    "Ingestion was interrupted by a server restart. Upload the file again to resume."
+)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     from app.repo import ensure_indexes
+    from app.repo.books import fail_unfinished
 
     try:
         ensure_indexes()
+        if n := fail_unfinished(INTERRUPTED_ERROR):
+            log.warning("marked %d interrupted ingestion(s) as failed", n)
     except Exception:  # the API still starts so /health works while MongoDB is down
-        log.exception("could not create MongoDB indexes")
+        log.exception("could not prepare MongoDB")
     yield
 
 

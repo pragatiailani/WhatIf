@@ -21,6 +21,19 @@ def test_books_roundtrip(mongo):
     assert books.get_book("missing") is None
 
 
+def test_fail_unfinished(mongo):
+    ids = {}
+    for status in ("queued", "merging", "ready", "failed"):
+        ids[status] = books.create_book(Book(title=status, content_hash=status)).id
+        books.set_status(ids[status], status, "old" if status == "failed" else None)
+
+    assert books.fail_unfinished("restarted") == 2
+    got = {s: books.get_book(i) for s, i in ids.items()}
+    for s in ("queued", "merging"):
+        assert (got[s].status, got[s].error) == ("failed", "restarted")
+    assert (got["ready"].status, got["failed"].error) == ("ready", "old")
+
+
 def test_chunks_order_and_range(mongo):
     spans = [PageSpan(page=1, char_start=0, char_end=4)]
     items = [Chunk(book_id="b", seq=s, text=f"t{s}", page_spans=spans) for s in (2, 0, 1)]

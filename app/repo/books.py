@@ -49,6 +49,17 @@ def set_status(book_id: str, status: BookStatus, error: str | None = None) -> No
     )
 
 
+def fail_unfinished(error: str) -> int:
+    """Mark every book still mid-ingestion as failed; returns how many. Ingestion runs in-process,
+    so after a restart nothing is working on them, and only a failed book is ingested again."""
+    unfinished = ["queued", "parsing", "extracting", "merging", "indexing"]
+    result = _col().update_many(
+        {"status": {"$in": unfinished}},
+        {"$set": {"status": "failed", "error": error, "updated_at": utcnow()}},
+    )
+    return result.modified_count
+
+
 def update_stats(book_id: str, stats: dict[str, int]) -> None:
     """Merge `stats` into the book's stats (existing keys are overwritten)."""
     fields = {f"stats.{k}": v for k, v in stats.items()}

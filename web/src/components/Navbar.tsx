@@ -1,9 +1,10 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BookOpen, Compass, LogOut, Menu, Moon, Sun, Upload, Library as LibraryIcon, X } from "lucide-react";
+import { BookOpen, Compass, LoaderCircle, LogOut, Menu, Moon, Sun, Upload, Library as LibraryIcon, X } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { isMock } from "../api/client";
+import { useIngestion } from "../lib/ingestion";
 import { useTheme } from "../lib/ui";
 
 const LINKS = [
@@ -34,6 +35,8 @@ export function Navbar() {
   const [open, setOpen] = useState(false);
   const nav = useNavigate();
   const links = LINKS.filter((l) => !l.auth || user);
+  const { active } = useIngestion();
+  const mapping = `Mapping ${active.length} book${active.length > 1 ? "s" : ""}`;
 
   return (
     <header className="sticky top-0 z-40 border-b border-line/60 bg-bg/75 backdrop-blur-md">
@@ -53,6 +56,18 @@ export function Navbar() {
         </nav>
         <div className="ml-auto flex items-center gap-2">
           {isMock && <span className="hidden rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-ink-mute lg:inline">demo data</span>}
+          {active.length > 0 && (
+            <Link
+              to={active.length === 1 ? `/books/${active[0].book.id}` : "/shelf"}
+              title={active.map((w) => `${w.book.title}: ${w.progress?.detail ?? "Starting…"}`).join("\n")}
+              aria-label={mapping}
+              className="flex items-center gap-1.5 rounded-full border border-gold/30 bg-gold-soft px-2.5 py-1 text-xs text-gold hover:border-gold/60"
+            >
+              <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
+              <span className="hidden sm:inline">{mapping}</span>
+              <span className="sm:hidden">{active.length}</span>
+            </Link>
+          )}
           <button onClick={toggle} className="rounded-lg p-2 text-ink-soft transition hover:bg-surface-2 hover:text-gold" aria-label="Toggle theme">
             <AnimatePresence mode="wait" initial={false}>
               <motion.span key={theme} initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} className="block">
