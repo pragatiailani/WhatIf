@@ -47,7 +47,7 @@ Built with **LangGraph**, **FalkorDB** and **MongoDB**.
 ### 1. Ingestion
 1. Upload the book. Create a `books` document and queue a job.
 2. Parse and clean: extract text, detect chapters, build `page_spans`.
-3. Chunk: about 1.5k tokens per chunk, with 10% overlap.
+3. Chunk: one chunk per page.
 4. Per-chunk extraction (LangGraph `Send` fan-out): the LLM returns entities, events and relations, each with an **evidence quote**.
 5. Save the level-0 chunk graphs to `graph_levels` and the mentions to `mentions`.
 6. Recursive merge: pair adjacent graphs, resolve entities (alias match, then embedding similarity, then an LLM judge), and merge with provenance kept. Repeat until one graph is left.
@@ -243,10 +243,10 @@ docker compose ps             # Check status
 ### Environment variables
 | Variable | Description | Default |
 |---|---|---|
-| `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` | Model used for extraction and answers | - |
-| `EMBED_MODEL` | Embedding model | - |
+| `AZURE_OPENAI_LLM_KEY`, `AZURE_LLM_ENDPOINT`, `AZURE_LLM_API_VERSION` | Azure OpenAI connection used for extraction and answers | - |
+| `AZURE_LLM_DEPLOYMENT_41_MINI` | Azure deployment name of the chat model | `gpt-4.1-mini` |
 | `MONGO_URI`, `MONGO_DB` | MongoDB connection | `mongodb://admin:admin@localhost:27017` |
 | `FALKOR_HOST`, `FALKOR_PORT` | FalkorDB connection | `localhost:6379` |
-| `CHUNK_TOKENS`, `CHUNK_OVERLAP` | Chunking settings | `1500, 0.1` |
+| `EXTRACTION_BATCH_SIZE` | Pages sent to the LLM in parallel during extraction | `10` |
 | `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
 | `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |
