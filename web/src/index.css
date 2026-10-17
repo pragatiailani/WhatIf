@@ -1,0 +1,181 @@
+@import "tailwindcss";
+
+/* Soft fantasy palette: an enchanted forest at dusk (dark) or warm cream vellum (light).
+   Accents stay desaturated so long reading sessions are easy on the eyes. */
+:root {
+  --bg: #0e1517;
+  --bg-2: #121b1e;
+  --surface: #172226;
+  --surface-2: #1f2d31;
+  --line: #2b3d41;
+  --ink: #ece6d6;
+  --ink-soft: #b5b7a8;
+  --ink-mute: #7a8580;
+  --gold: #e3b866;
+  --gold-soft: #e3b86624;
+  --sage: #7fc4a4; /* storyline additions */
+  --rose: #d98a87; /* hidden / stale */
+  --amber: #e9a35e; /* modified */
+  --violet: #9fa8e8; /* retrieval trace */
+  --shadow: 0 12px 40px -14px #000a;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f1e5;
+  --bg-2: #f1e9d9;
+  --surface: #fdf9f1;
+  --surface-2: #f3ebdc;
+  --line: #e0d4bd;
+  --ink: #26302d;
+  --ink-soft: #55605a;
+  --ink-mute: #8a8f84;
+  --gold: #a67722;
+  --gold-soft: #a677221c;
+  --sage: #2f8463;
+  --rose: #b4524f;
+  --amber: #b46e1c;
+  --violet: #5761b5;
+  --shadow: 0 12px 30px -16px #5a4a2a55;
+  color-scheme: light;
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mute: var(--ink-mute);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-sage: var(--sage);
+  --color-rose: var(--rose);
+  --color-amber: var(--amber);
+  --color-violet: var(--violet);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-serif: "Lora", Georgia, serif;
+  --font-sans: "Manrope", system-ui, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  background-image:
+    radial-gradient(1200px 600px at 85% -10%, var(--gold-soft), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, color-mix(in srgb, var(--sage) 9%, transparent), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* Fraunces at its softest, slightly tightened: rounded, storybook headings. */
+.font-display {
+  font-variation-settings: "SOFT" 100;
+  font-optical-sizing: auto;
+  font-weight: 460; /* unlayered, so it wins over font-semibold: Fraunces gets heavy fast */
+  letter-spacing: -0.015em;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--gold) 35%, transparent);
+}
+
+/* Thin, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+/* Layered so Tailwind utilities (e.g. pl-10 on .input) can override these. */
+@layer components {
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: var(--shadow);
+}
+
+/* Gold hairline with diamond ornament, used as a section divider */
+.flourish {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--gold);
+}
+.flourish::before,
+.flourish::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold) 50%, transparent);
+  opacity: 0.5;
+}
+
+.input {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px var(--gold-soft);
+}
+.input::placeholder {
+  color: var(--ink-mute);
+}
+}
+
+/* Shimmering gold text for hero headings */
+.gilded {
+  background: linear-gradient(100deg, var(--gold) 20%, #f6e2b0 45%, var(--gold) 70%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gild 6s linear infinite;
+}
+:root[data-theme="light"] .gilded {
+  background-image: linear-gradient(100deg, var(--gold) 20%, #d9a74a 45%, var(--gold) 70%);
+}
+@keyframes gild {
+  to {
+    background-position: -200% center;
+  }
+}
+
+.prose-story {
+  font-family: var(--font-serif);
+  line-height: 1.75;
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Marching dashes along graph edges the answer walked */
+@keyframes flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
