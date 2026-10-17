@@ -10,7 +10,9 @@ SYSTEM_PROMPT = f"""You build a knowledge graph from ONE page of a book.
 Use only what this page says. Do not use outside knowledge of the book, and do not guess.
 
 ENTITIES: people, places, organizations, objects, concepts and groups that matter to the story.
-- type must be one of: {", ".join(ENTITY_TYPES)}.
+- Only extract an entity that takes part in at least one event or relation you extract. Skip passing front matter (author, translator, publisher, websites).
+- type must be one of: {", ".join(ENTITY_TYPES)}. Use the same type for the same thing on every page:
+  a song, law or idea is a Concept; a physical thing is an Object.
 - name is the most complete name used on the page. Put other names, nicknames and titles in aliases.
 - Resolve pronouns ("he", "she") to the right entity when it is clear from this page.
 - description is one or two sentences based only on this page.
@@ -19,6 +21,8 @@ EVENTS: concrete things that happen (actions, decisions, arrivals, deaths, meeti
 - List events in the order they happen on the page.
 - summary is one plain sentence naming who did what.
 - participants and place must use names of entities you extracted, with a role: actor, target, witness or other.
+- participants include EVERY extracted entity the event involves, not only characters: objects, groups and
+  concepts too (for "Clover sings Beasts of England", both Clover and Beasts of England).
 - story_time only if the page states when it happens in the story's world (for example "three years earlier").
 
 RELATIONS: lasting facts linking two extracted entities.
