@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     falkor_password: str | None = None
 
     auth_secret: str  # signs sign-in tokens
+    secrets_key: str = ""  # encrypts stored third-party tokens; empty derives it from auth_secret
 
     server_host: str = "127.0.0.1"
     server_port: int = 8000

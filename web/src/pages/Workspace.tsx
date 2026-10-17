@@ -10,6 +10,7 @@ import { useAuth } from "../auth/AuthContext";
 import { GraphView, type Overlay } from "../components/GraphView";
 import { InkDots, PageLoader, QuillLoader } from "../components/Loaders";
 import { Markdown } from "../components/Markdown";
+import { InkittTokenModal } from "../components/InkittTokenModal";
 import { useFork } from "../components/StorylineCard";
 import { Badge, Button, timeAgo } from "../components/ui";
 import { errorText, useToast } from "../lib/ui";
@@ -42,6 +43,8 @@ export default function Workspace() {
   const [pane, setPane] = useState<"chat" | "graph">("chat");
   const [drawer, setDrawer] = useState(false);
   const [error, setError] = useState("");
+  /** the message to send again once the user has connected Inkitt */
+  const [inkittRetry, setInkittRetry] = useState<string | null>(null);
   const autoSent = useRef(false);
 
   const mine = !!storyline && storyline.owner_id === user?.id;
@@ -80,6 +83,7 @@ export default function Workspace() {
         setMessages((m) => [...(m ?? []), turn.user, turn.assistant]);
         setGraph(turn.graph);
         setActive(turn.assistant.id);
+        if (turn.actions?.includes("inkitt_token_required")) setInkittRetry(text);
         if (turn.storyline && !sid) {
           toast(`Your what-if branched a new storyline: “${turn.storyline.title}”`, "success");
           nav(`/read/${bookId}/${turn.storyline.id}`);
@@ -114,6 +118,16 @@ export default function Workspace() {
   return (
     <div className="flex h-[calc(100dvh-4rem)] flex-col">
       {forkOverlay}
+      <InkittTokenModal
+        open={inkittRetry !== null}
+        onClose={() => setInkittRetry(null)}
+        onSaved={() => {
+          const text = inkittRetry;
+          setInkittRetry(null);
+          toast("Inkitt connected.", "success");
+          if (text) send(text);
+        }}
+      />
       {/* top bar */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line/60 px-4 py-2.5">
         <Link to={`/books/${book.id}`} className="flex items-center gap-1.5 text-sm text-ink-mute hover:text-gold" title="Back to book">

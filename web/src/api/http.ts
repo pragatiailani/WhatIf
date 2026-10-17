@@ -51,6 +51,8 @@ export const httpApi: Api = {
   signUp: (name, email, password) => req("/auth/signup", json("POST", { name, email, password })),
   signIn: (email, password) => req("/auth/signin", json("POST", { email, password })),
   me: () => req("/auth/me"),
+  setInkittToken: (token) => req("/auth/me/inkitt", json("PUT", { token })),
+  clearInkittToken: () => req("/auth/me/inkitt", json("DELETE")),
 
   listPublicBooks: () => req("/books?scope=public"),
   listMyBooks: () => req("/books?scope=mine"),

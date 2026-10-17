@@ -34,6 +34,7 @@ class User(_Doc):
     name: str
     email: str  # lower-cased
     password_hash: str
+    inkitt_pat: str | None = None  # Inkitt access token, encrypted with `app.crypto`
     created_at: datetime = Field(default_factory=utcnow)
 
 

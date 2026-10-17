@@ -18,7 +18,7 @@ from langgraph.types import Checkpointer
 
 from app.agents.book_qa.prompt import SYSTEM_PROMPT
 from app.agents.registry import register_agent
-from app.agents.tools import open_tools, tool_text
+from app.agents.tools import CONNECT_INKITT, open_tools, tool_text
 from app.config import get_settings
 from app.constants import HISTORY_KEEP_MESSAGES, MAX_CITATIONS, MAX_MODEL_CALLS, TITLE_CHARS
 from app.llm import get_chat_model
@@ -28,6 +28,8 @@ from app.repo.models import Message
 
 NAME = "book_qa"
 CITING_TOOLS = {"get_chunks": "chunks", "search_chunks": "results"}
+# Set in a turn's `actions` when the UI should ask the user for their Inkitt token.
+INKITT_TOKEN_REQUIRED = "inkitt_token_required"
 
 
 def build_agent(llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None):
@@ -105,7 +107,7 @@ async def run(
     llm: BaseChatModel | None = None,
     checkpointer: Checkpointer = ...,
 ) -> dict[str, Any]:
-    """Answer one question in a chat session. Returns {answer, citations, trace}.
+    """Answer one question in a chat session. Returns {answer, citations, trace, actions}.
 
     Pass `checkpointer=None` to run without saved conversation memory.
     """
@@ -115,13 +117,16 @@ async def run(
     if checkpointer is ...:
         checkpointer = get_checkpointer()
 
-    async with open_tools(book_id, session_id) as tools:
+    async with open_tools(book_id, session_id, session.user_id, session.storyline_id) as tools:
         agent = build_agent(llm or get_chat_model(), tools, checkpointer)
         result = await agent.ainvoke(
             {"messages": [HumanMessage(content=question)]},
             {"configurable": {"thread_id": session_id}},
         )
     answer, citations, trace = read_turn(result["messages"])
+    actions = []
+    if session.user_id and any(t["tool"] == CONNECT_INKITT for t in trace):
+        actions.append(INKITT_TOKEN_REQUIRED)
 
     sessions.add_message(Message(session_id=session_id, role="user", content=question))
     sessions.add_message(
@@ -129,4 +134,4 @@ async def run(
     )
     if session.title is None:
         sessions.set_title(session_id, question[:TITLE_CHARS])
-    return {"answer": answer, "citations": citations, "trace": trace}
+    return {"answer": answer, "citations": citations, "trace": trace, "actions": actions}

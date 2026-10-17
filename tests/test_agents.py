@@ -68,7 +68,7 @@ def env(mongo, monkeypatch):
     seen_book_ids.clear()
 
     @asynccontextmanager
-    async def fake_open_tools(book_id, session_id):
+    async def fake_open_tools(book_id, session_id, user_id=None, storyline_id=None):
         yield make_tools()
 
     monkeypatch.setattr(book_qa, "open_tools", fake_open_tools)

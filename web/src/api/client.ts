@@ -23,6 +23,9 @@ export interface Api {
   signUp(name: string, email: string, password: string): Promise<Session>;
   signIn(email: string, password: string): Promise<Session>;
   me(token: string): Promise<User>;
+  /** Saves the user's Inkitt access token after Inkitt accepts it. */
+  setInkittToken(token: string): Promise<User>;
+  clearInkittToken(): Promise<User>;
 
   // books
   listPublicBooks(): Promise<Book[]>;

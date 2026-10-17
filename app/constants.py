@@ -7,6 +7,7 @@ BOOKS_COLLECTION = "books"
 CHUNKS_COLLECTION = "chunks"
 MENTIONS_COLLECTION = "mentions"
 GRAPH_LEVELS_COLLECTION = "graph_levels"
+INKITT_STORIES_COLLECTION = "inkitt_stories"
 
 # --- Auth ----------------------------------------------------------------
 
@@ -129,4 +130,19 @@ MAX_MODEL_CALLS = 15  # model calls per question (tool loop bound)
 MAX_CITATIONS = 8
 # Tools the model may call; the conversation is already in its context.
 AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
+
+# --- Inkitt --------------------------------------------------------------
+
+INKITT_MCP_URL = "https://mcp-server.inkitt.com/mcp"
+# Inkitt tools the chat agent may call. The server also has delete and customer-support (`cs_*`)
+# tools; those are never loaded.
+INKITT_AGENT_TOOLS = frozenset(
+    {
+        "get_settings", "list_stories", "get_story", "update_story", "list_chapters",
+        "get_chapter", "publish_chapter", "unpublish_chapter", "publish_all_chapters",
+        "unpublish_all_chapters", "get_cover", "update_cover",
+    }
+)  # fmt: skip
+INKITT_SUMMARY_CHARS = 2205
+INKITT_CHAPTER_NAME_CHARS = 200
 TITLE_CHARS = 60

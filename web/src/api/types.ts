@@ -17,6 +17,8 @@ export interface User {
   name: string;
   email: string;
   created_at: string;
+  /** an Inkitt access token is saved for this user */
+  inkitt_connected?: boolean;
 }
 
 export interface Session {
@@ -177,4 +179,8 @@ export interface ChatTurn {
   graph: StoryGraph;
   /** null when chatting with canon; a new storyline when an edit is made from canon */
   storyline: Storyline | null;
+  /** things the UI should do after the turn, e.g. ask for the user's Inkitt token */
+  actions?: ChatAction[];
 }
+
+export type ChatAction = "inkitt_token_required";

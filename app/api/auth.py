@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
+from app import inkitt
 from app.auth import hash_password, issue_token, verify_password, verify_token
 from app.constants import MIN_PASSWORD_LENGTH
 from app.repo import users
@@ -19,6 +20,7 @@ class UserOut(BaseModel):
     name: str
     email: str
     created_at: str
+    inkitt_connected: bool = False
 
 
 class SessionOut(BaseModel):
@@ -37,9 +39,17 @@ class SignIn(BaseModel):
     password: str
 
 
+class InkittToken(BaseModel):
+    token: str = Field(min_length=1, max_length=500)
+
+
 def _user_out(user: User) -> UserOut:
     return UserOut(
-        id=user.id, name=user.name, email=user.email, created_at=user.created_at.isoformat()
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        created_at=user.created_at.isoformat(),
+        inkitt_connected=user.inkitt_pat is not None,
     )
 
 
@@ -86,3 +96,21 @@ def sign_in(body: SignIn) -> SessionOut:
 @router.get("/me")
 def me(user: Annotated[User, Depends(current_user)]) -> UserOut:
     return _user_out(user)
+
+
+@router.put("/me/inkitt")
+async def connect_inkitt(
+    body: InkittToken, user: Annotated[User, Depends(current_user)]
+) -> UserOut:
+    """Check the Inkitt access token with Inkitt, then save it encrypted."""
+    token = body.token.strip()
+    if not await inkitt.verify(token):
+        raise HTTPException(400, "Inkitt did not accept that token. Check it and try again.")
+    users.set_inkitt_pat(user.id, token)
+    return _user_out(users.get_user(user.id) or user)
+
+
+@router.delete("/me/inkitt")
+def disconnect_inkitt(user: Annotated[User, Depends(current_user)]) -> UserOut:
+    users.set_inkitt_pat(user.id, None)
+    return _user_out(users.get_user(user.id) or user)
