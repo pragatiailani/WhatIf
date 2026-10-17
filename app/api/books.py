@@ -45,7 +45,7 @@ def list_books(
 ) -> list[BookOut]:
     """`public`: the public library. `mine`: the signed-in user's uploads, public or private."""
     if scope == "public":
-        return [_out(b) for b in books.list_books("public")]
+        return [_out(b) for b in books.list_by_visibility("public")]
     if user is None:
         raise HTTPException(401, "sign in required")
     return [_out(b) for b in books.list_owned_books(user.id)]

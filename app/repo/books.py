@@ -25,7 +25,7 @@ def get_book(book_id: str) -> Book | None:
     return Book.model_validate(doc) if doc else None
 
 
-def list_books(visibility: Visibility) -> list[Book]:
+def list_by_visibility(visibility: Visibility) -> list[Book]:
     """Books with `visibility`, newest first."""
     cursor = _col().find({"visibility": visibility}).sort("created_at", DESCENDING)
     return [Book.model_validate(d) for d in cursor]
