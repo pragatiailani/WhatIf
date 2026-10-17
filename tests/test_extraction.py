@@ -1,5 +1,14 @@
+from typing import get_args
+
+from app.constants import ENTITY_TYPES
 from app.extraction.evidence import locate_quote, page_at
-from app.extraction.schema import ChunkExtraction, ExtractedRelation, entity_key, event_key
+from app.extraction.schema import (
+    ChunkExtraction,
+    EntityType,
+    ExtractedRelation,
+    entity_key,
+    event_key,
+)
 from app.repo.models import Chunk, PageSpan
 
 TEXT = (
@@ -64,7 +73,12 @@ def test_relation_vocabulary_is_normalized():
 
     assert rel("friend of") == "FRIEND_OF"
     assert rel("Works-For") == "WORKS_FOR"
-    assert rel("secretly admires") == "RELATED_TO"
+    assert rel("secretly admires") == "OTHER"
+    assert rel("involves") == "OTHER"  # structural edges are built in code, not extracted
+
+
+def test_entity_type_literal_matches_constants():
+    assert get_args(EntityType) == ENTITY_TYPES
 
 
 def test_keys():

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.constants import FALLBACK_REL, REL_VOCABULARY
 
-EntityType = Literal["Character", "Place", "Organization", "Object", "Concept", "Group"]
+EntityType = Literal["Character", "Place", "Organization", "Group", "Object", "Concept"]
 
 
 class ExtractedEntity(BaseModel):

@@ -12,7 +12,9 @@ from falkordb import Graph
 
 from app.constants import (
     DEFAULT_RELATION_LIMIT,
+    ENTITY_TYPES,
     FALKOR_INDEX_EXISTS_ERROR,
+    FALKOR_MISSING_GRAPH_ERROR,
     GRAPH_NAME_PREFIX,
     KEY_INDEXED_LABELS,
     OMITTED_GRAPH_PROPS,
@@ -70,8 +72,12 @@ def ensure_indexes(book_id: str) -> None:
                 raise
 
 
-def drop_graph(book_id: str) -> None:
-    _graph(book_id).delete()
+def drop_graph(book_id: str, missing_ok: bool = False) -> None:
+    try:
+        _graph(book_id).delete()
+    except Exception as exc:  # FalkorDB errors if the graph does not exist
+        if not (missing_ok and FALKOR_MISSING_GRAPH_ERROR in str(exc).lower()):
+            raise
 
 
 # --- canon writes --------------------------------------------------------
@@ -84,17 +90,22 @@ def _payload(item: GraphEntity | GraphEvent | GraphRelation) -> dict[str, Any]:
 
 
 def upsert_entities(book_id: str, entities: Sequence[GraphEntity]) -> None:
-    rows = [_payload(e) for e in entities]
-    _write(
-        book_id,
-        """
-        UNWIND $rows AS row
-        MERGE (n:Entity {key: row.key})
-        SET n += row
-        SET n.embedding = CASE WHEN row.embedding IS NULL THEN NULL ELSE vecf32(row.embedding) END
-        """,
-        {"rows": rows},
-    )
+    """Entities get their type as a second label (`:Entity:Character`) when it is a known type."""
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for e in entities:
+        by_type.setdefault(e.type, []).append(_payload(e))
+    for type_, rows in by_type.items():
+        labels = f"Entity:{type_}" if type_ in ENTITY_TYPES else "Entity"  # never raw input
+        _write(
+            book_id,
+            f"""
+            UNWIND $rows AS row
+            MERGE (n:{labels} {{key: row.key}})
+            SET n += row
+            SET n.embedding = CASE WHEN row.embedding IS NULL THEN NULL ELSE vecf32(row.embedding) END
+            """,
+            {"rows": rows},
+        )
 
 
 def upsert_events(book_id: str, events: Sequence[GraphEvent]) -> None:
@@ -124,6 +135,56 @@ def upsert_relations(book_id: str, relations: Sequence[GraphRelation]) -> None:
         """,
         {"rows": rows},
     )
+
+
+def upsert_event_links(
+    book_id: str,
+    involves: Sequence[dict[str, Any]] = (),
+    at: Sequence[dict[str, Any]] = (),
+    before: Sequence[dict[str, Any]] = (),
+    in_chapter: Sequence[dict[str, Any]] = (),
+) -> None:
+    """Structural event edges. Rows: involves {event, entity, role}, at {event, place},
+    before {src, dst} (event keys), in_chapter {event, chapter} (chapter title)."""
+    queries = (
+        (
+            involves,
+            """
+            UNWIND $rows AS row
+            MATCH (e:Event {key: row.event}), (n:Entity {key: row.entity})
+            MERGE (e)-[r:INVOLVES]->(n)
+            SET r.role = row.role
+            """,
+        ),
+        (
+            at,
+            """
+            UNWIND $rows AS row
+            MATCH (e:Event {key: row.event}), (p:Entity {key: row.place})
+            MERGE (e)-[:AT]->(p)
+            """,
+        ),
+        (
+            before,
+            """
+            UNWIND $rows AS row
+            MATCH (a:Event {key: row.src}), (b:Event {key: row.dst})
+            MERGE (a)-[:BEFORE]->(b)
+            """,
+        ),
+        (
+            in_chapter,
+            """
+            UNWIND $rows AS row
+            MATCH (e:Event {key: row.event})
+            MERGE (c:Chapter {title: row.chapter})
+            MERGE (e)-[:IN_CHAPTER]->(c)
+            """,
+        ),
+    )
+    for rows, cypher in queries:
+        if rows:
+            _write(book_id, cypher, {"rows": list(rows)})
 
 
 # --- reads ---------------------------------------------------------------
