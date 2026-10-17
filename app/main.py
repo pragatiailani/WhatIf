@@ -1,8 +1,27 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import logging
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api import chat
+
+log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from app.repo import ensure_indexes
+
+    try:
+        ensure_indexes()
+    except Exception:  # the API still starts so /health works while MongoDB is down
+        log.exception("could not create MongoDB indexes")
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="WhatIf?",
     description="A chatbot that turns a book into a knowledge graph with customizable storylines",
     version="0.1.0",
@@ -32,11 +51,7 @@ async def health():
     return {"status": "ok"}
 
 
-# Import routes (add these as you build them)
-# from app.api import books, chat, ingestion
-# app.include_router(books.router)
-# app.include_router(chat.router)
-# app.include_router(ingestion.router)
+app.include_router(chat.router)
 
 
 if __name__ == "__main__":

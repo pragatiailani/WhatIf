@@ -253,3 +253,72 @@ def entity_relations(
         )
         for r_props, src, dst, m_props in rows
     ]
+
+
+def entity_index(scope: GraphScope) -> list[dict[str, Any]]:
+    """Name, aliases and popularity of every entity: all the fields name search needs."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (n:Entity) WHERE {visible(scope, 'n')}
+        RETURN n.key, n.name, n.type, n.aliases, n.mention_count
+        """,
+    )
+    return [
+        {"key": k, "name": name, "type": type_, "aliases": aliases or [], "mention_count": count or 0}
+        for k, name, type_, aliases, count in rows
+    ]
+
+
+def expand(
+    scope: GraphScope, keys: Sequence[str], rel_types: Sequence[str] | None = None
+) -> list[tuple[str, GraphRelation, GraphEntity]]:
+    """One hop out of `keys` over REL edges (either direction), optionally limited to `rel_types`.
+    Each row is (key it was reached from, the edge, the entity on the other end)."""
+    type_filter = "AND r.rel IN $rel_types" if rel_types else ""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (n:Entity)-[r:REL]-(m:Entity)
+        WHERE n.key IN $keys {type_filter} AND {visible(scope, 'n', 'r', 'm')}
+        RETURN n.key, properties(r), startNode(r).key, endNode(r).key, properties(m)
+        ORDER BY r.weight DESC
+        """,
+        {"keys": list(keys), "rel_types": list(rel_types or [])},
+    )
+    return [
+        (
+            origin,
+            GraphRelation.model_validate({**r_props, "src": src, "dst": dst}),
+            GraphEntity.model_validate(_props(m_props)),
+        )
+        for origin, r_props, src, dst, m_props in rows
+    ]
+
+
+def entity_events(scope: GraphScope, key: str) -> list[tuple[GraphEvent, str]]:
+    """Events involving `key` with the entity's role in each, in narrative order."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event)-[i:INVOLVES]->(n:Entity {{key: $key}})
+        WHERE {visible(scope, 'e', 'n')}
+        RETURN properties(e), i.role ORDER BY e.story_pos
+        """,
+        {"key": key},
+    )
+    return [(GraphEvent.model_validate(_props(e)), role) for e, role in rows]
+
+
+def chapter_events(scope: GraphScope, chapter: str) -> list[tuple[GraphEvent, list[str]]]:
+    """Events of one chapter (exact title) in narrative order, each with its participants' keys."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event {{chapter: $chapter}}) WHERE {visible(scope, 'e')}
+        OPTIONAL MATCH (e)-[:INVOLVES]->(n:Entity)
+        RETURN properties(e), collect(n.key) ORDER BY e.story_pos
+        """,
+        {"chapter": chapter},
+    )
+    return [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys in rows]

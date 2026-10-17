@@ -89,3 +89,33 @@ DEFAULT_RELATION_LIMIT = 50
 FALKOR_INDEX_EXISTS_ERROR = "already indexed"
 # Substring of the FalkorDB error raised when deleting a graph that does not exist.
 FALKOR_MISSING_GRAPH_ERROR = "empty key"
+
+# --- Agent tools (MCP server) ---------------------------------------------
+
+SESSIONS_COLLECTION = "chat_sessions"
+MESSAGES_COLLECTION = "messages"
+NOTES_COLLECTION = "notes"
+COMMUNITIES_COLLECTION = "communities"
+
+# Hard caps so a tool result always fits in the LLM context.
+TOOL_MAX_RESULTS = 20  # entities / chunks / communities per call
+TOOL_MAX_HOPS = 2  # get_neighbors
+TOOL_MAX_PATH_HOPS = 6  # find_path
+TOOL_MAX_FRONTIER = 200  # nodes expanded per BFS level in find_path
+TOOL_MAX_CHUNKS_PER_CALL = 10  # get_chunks
+TOOL_MAX_TIMELINE_EVENTS = 100  # get_timeline / get_chapter_summary
+TOOL_SNIPPET_CHARS = 400  # search_chunks excerpt length
+TOOL_MAX_HISTORY = 50  # get_history
+TOOL_DESCRIPTION_CHARS = 400  # entity description length in tool results
+TOOL_MAX_NEIGHBORS = 50  # get_neighbors / get_relations
+TOOL_BFS_BATCH = 100  # nodes per expand() query in find_path
+
+# --- Book Q&A agent ----------------------------------------------------------
+
+DEFAULT_CHAT_HISTORY_BUDGET = 6000  # tokens of conversation before older turns are summarised
+HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
+MAX_MODEL_CALLS = 15  # model calls per question (tool loop bound)
+MAX_CITATIONS = 8
+# Tools the model may call; the conversation is already in its context.
+AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
+TITLE_CHARS = 60
