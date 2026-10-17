@@ -187,6 +187,32 @@ def upsert_event_links(
             _write(book_id, cypher, {"rows": list(rows)})
 
 
+def set_communities(
+    book_id: str, found: Sequence[dict[str, Any]], members: Sequence[dict[str, Any]]
+) -> None:
+    """Replace the book's communities: `found` rows {cid, title} become Community nodes, and
+    `members` rows {key, cid} an IN_COMMUNITY edge plus `community_id` on the entity."""
+    _write(book_id, "MATCH (c:Community) DETACH DELETE c")
+    _write(book_id, "MATCH (n:Entity) WHERE n.community_id IS NOT NULL SET n.community_id = NULL")
+    if found:
+        _write(
+            book_id,
+            "UNWIND $rows AS row CREATE (:Community {cid: row.cid, title: row.title})",
+            {"rows": list(found)},
+        )
+    if members:
+        _write(
+            book_id,
+            """
+            UNWIND $rows AS row
+            MATCH (n:Entity {key: row.key}), (c:Community {cid: row.cid})
+            SET n.community_id = row.cid
+            MERGE (n)-[:IN_COMMUNITY]->(c)
+            """,
+            {"rows": list(members)},
+        )
+
+
 # --- reads ---------------------------------------------------------------
 
 
@@ -310,6 +336,50 @@ def entity_events(scope: GraphScope, key: str) -> list[tuple[GraphEvent, str]]:
     return [(GraphEvent.model_validate(_props(e)), role) for e, role in rows]
 
 
+def event_participants(scope: GraphScope, keys: Sequence[str]) -> dict[str, list[str]]:
+    """Event key -> the keys of the entities it involves, for the given events."""
+    rows = _read(
+        scope,
+        f"""
+        MATCH (e:Event)-[:INVOLVES]->(n:Entity) WHERE e.key IN $keys AND {visible(scope, 'e', 'n')}
+        RETURN e.key, collect(n.key)
+        """,
+        {"keys": list(keys)},
+    )
+    return {k: [n for n in found if n] for k, found in rows}
+
+
+def book_graph(
+    scope: GraphScope,
+) -> tuple[list[GraphEntity], list[tuple[GraphEvent, list[str]]], list[GraphRelation]]:
+    """The whole visible graph, for display: entities, events (in narrative order, each with its
+    participants' keys) and story relations."""
+    entities = _read(
+        scope,
+        f"MATCH (n:Entity) WHERE {visible(scope, 'n')} RETURN properties(n) ORDER BY n.key",
+    )
+    events = _read(
+        scope,
+        f"""
+        MATCH (e:Event) WHERE {visible(scope, 'e')}
+        OPTIONAL MATCH (e)-[:INVOLVES]->(n:Entity)
+        RETURN properties(e), collect(n.key), e.story_pos AS pos ORDER BY pos
+        """,
+    )
+    relations = _read(
+        scope,
+        f"""
+        MATCH (a:Entity)-[r:REL]->(b:Entity) WHERE {visible(scope, 'a', 'r', 'b')}
+        RETURN properties(r), a.key, b.key
+        """,
+    )
+    return (
+        [GraphEntity.model_validate(_props(e)) for (e,) in entities],
+        [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys, _ in events],
+        [GraphRelation.model_validate({**r, "src": s, "dst": d}) for r, s, d in relations],
+    )
+
+
 def chapter_events(scope: GraphScope, chapter: str) -> list[tuple[GraphEvent, list[str]]]:
     """Events of one chapter (exact title) in narrative order, each with its participants' keys."""
     rows = _read(
@@ -317,8 +387,8 @@ def chapter_events(scope: GraphScope, chapter: str) -> list[tuple[GraphEvent, li
         f"""
         MATCH (e:Event {{chapter: $chapter}}) WHERE {visible(scope, 'e')}
         OPTIONAL MATCH (e)-[:INVOLVES]->(n:Entity)
-        RETURN properties(e), collect(n.key) ORDER BY e.story_pos
+        RETURN properties(e), collect(n.key), e.story_pos AS pos ORDER BY pos
         """,
         {"chapter": chapter},
     )
-    return [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys in rows]
+    return [(GraphEvent.model_validate(_props(e)), [k for k in keys if k]) for e, keys, _ in rows]

@@ -2,9 +2,11 @@
 
 from typing import Any
 
+from app import retrieval
 from app.constants import (
     FALLBACK_REL,
     REL_VOCABULARY,
+    SEMANTIC_ENTITY_MIN_SCORE,
     TOOL_BFS_BATCH,
     TOOL_MAX_FRONTIER,
     TOOL_MAX_HOPS,
@@ -15,20 +17,32 @@ from app.constants import (
 from app.mcp_server.common import canon_scope, entity_out, relation_out, resolve, short
 from app.mcp_server.matching import content_words, match_entities
 from app.repo import communities, graph
-from app.repo.models import GraphEntity, GraphRelation
+from app.repo.models import Community, GraphEntity, GraphRelation
 
 
 def find_entities(book_id: str, text: str, limit: int = 10) -> dict[str, Any]:
+    """Entities named in `text`; when no name matches, the entities closest in meaning."""
     scope = canon_scope(book_id)
-    found = match_entities(text, graph.entity_index(scope), min(max(limit, 1), TOOL_MAX_RESULTS))
+    limit = min(max(limit, 1), TOOL_MAX_RESULTS)
+    found = [
+        {**f, "match": "name"} for f in match_entities(text, graph.entity_index(scope), limit)
+    ]
+    if not found:
+        hits = retrieval.semantic(book_id, "entity", retrieval.embed_query(text), limit)
+        found = [
+            {"key": key, "score": round(sim, 3), "matched": None, "match": "meaning"}
+            for key, sim in hits
+            if sim >= SEMANTIC_ENTITY_MIN_SCORE
+        ]
     by_key = {e.key: e for e in graph.get_entities(scope, [f["key"] for f in found])}
     return {
         "entities": [
-            {**entity_out(by_key[f["key"]]), "score": f["score"], "matched": f["matched"]}
+            {**entity_out(by_key[f["key"]]), "score": f["score"], "matched": f["matched"],
+             "match": f["match"]}
             for f in found
             if f["key"] in by_key
         ]
-    }
+    }  # fmt: skip
 
 
 def get_neighbors(book_id: str, entity: str, hops: int = 1, limit: int = 25) -> dict[str, Any]:
@@ -134,11 +148,21 @@ def get_relations(
     }
 
 
+def community_out(c: Community, score: float | None = None, chars: int = 1500) -> dict[str, Any]:
+    out = {"cid": c.cid, "level": c.level, "title": c.title, "summary": short(c.summary, chars),
+           "entity_count": len(c.entity_keys)}  # fmt: skip
+    return out if score is None else {**out, "score": round(score, 4)}
+
+
 def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
+    """Communities by keyword and meaning. When neither finds anything, the book overview and the
+    largest groups, so a big-picture question always gets the big picture."""
     canon_scope(book_id)
     everything = communities.list_communities(book_id)
     if not everything:
         return {"communities": [], "note": "no communities have been built for this book yet"}
+    limit = min(max(limit, 1), TOOL_MAX_RESULTS)
+    by_cid = {c.cid: c for c in everything}
     terms = content_words(query)
     scored = []
     for c in everything:
@@ -147,16 +171,16 @@ def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, An
         if score:
             scored.append((score, c))
     scored.sort(key=lambda sc: (-sc[0], sc[1].cid))
-    return {
-        "communities": [
-            {
-                "cid": c.cid,
-                "level": c.level,
-                "title": c.title,
-                "summary": short(c.summary, 1500),
-                "entity_count": len(c.entity_keys),
-                "score": score,
-            }
-            for score, c in scored[: min(max(limit, 1), TOOL_MAX_RESULTS)]
-        ]
-    }
+    hits = retrieval.semantic(book_id, "community", retrieval.embed_query(query), limit)
+    meaning = [int(ref) for ref, _ in hits if int(ref) in by_cid]
+    if not meaning:
+        if scored:
+            return {"communities": [community_out(c, s) for s, c in scored[:limit]]}
+        overview = [c for c in everything if c.level > 0]
+        groups = sorted((c for c in everything if c.level == 0), key=lambda c: c.cid)
+        return {
+            "communities": [community_out(c) for c in [*overview, *groups][:limit]],
+            "note": "nothing matched the query; showing the book overview and its largest groups",
+        }
+    fused = retrieval.fuse([str(c.cid) for _, c in scored], [str(cid) for cid in meaning])
+    return {"communities": [community_out(by_cid[int(ref)], s) for ref, s in fused[:limit]]}

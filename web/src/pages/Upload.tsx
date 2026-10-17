@@ -6,6 +6,7 @@ import { api, isMock } from "../api/client";
 import type { Book, BookStatus, IngestionProgress, Visibility } from "../api/types";
 import { BookCover } from "../components/BookCover";
 import { Button, Page } from "../components/ui";
+import { useIngestion } from "../lib/ingestion";
 import { errorText, useToast } from "../lib/ui";
 
 const ACCEPT = ".pdf";
@@ -13,6 +14,7 @@ const ACCEPT = ".pdf";
 export default function Upload() {
   const toast = useToast();
   const nav = useNavigate();
+  const { track } = useIngestion();
   const input = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [over, setOver] = useState(false);
@@ -38,7 +40,9 @@ export default function Upload() {
     if (!file) return;
     setBusy(true);
     try {
-      setBook(await api.uploadBook(file, { title, author, visibility }));
+      const uploaded = await api.uploadBook(file, { title, author, visibility });
+      track(uploaded); // the app-wide watch toasts when it is ready, wherever the user is
+      setBook(uploaded);
     } catch (e) {
       toast(errorText(e), "error");
     } finally {
@@ -58,7 +62,7 @@ export default function Upload() {
             </div>
           </div>
           <div className="mt-8">
-            <IngestionStages bookId={book.id} onReady={() => toast(`“${book.title}” is ready to explore.`, "success")} onOpen={() => nav(`/books/${book.id}`)} />
+            <IngestionStages bookId={book.id} onOpen={() => nav(`/books/${book.id}`)} />
           </div>
         </div>
       </Page>

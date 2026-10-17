@@ -5,11 +5,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
-import type { Book, Checkpoint, Citation, Message, RetrievalTrace, StoryDiff, StoryGraph, Storyline } from "../api/types";
+import type { Book, Checkpoint, Citation, Message, Reasoning, StoryDiff, StoryGraph, Storyline, TraceStep } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { GraphView, type Overlay } from "../components/GraphView";
 import { InkDots, PageLoader, QuillLoader } from "../components/Loaders";
 import { Markdown } from "../components/Markdown";
+import { InkittTokenModal } from "../components/InkittTokenModal";
 import { useFork } from "../components/StorylineCard";
 import { Badge, Button, timeAgo } from "../components/ui";
 import { errorText, useToast } from "../lib/ui";
@@ -20,6 +21,8 @@ interface Pending {
   user: Message;
   phase: string;
   text: string;
+  steps: TraceStep[];
+  reasoning?: Reasoning;
 }
 
 export default function Workspace() {
@@ -42,6 +45,8 @@ export default function Workspace() {
   const [pane, setPane] = useState<"chat" | "graph">("chat");
   const [drawer, setDrawer] = useState(false);
   const [error, setError] = useState("");
+  /** the message to send again once the user has connected Inkitt */
+  const [inkittRetry, setInkittRetry] = useState<string | null>(null);
   const autoSent = useRef(false);
 
   const mine = !!storyline && storyline.owner_id === user?.id;
@@ -70,16 +75,24 @@ export default function Workspace() {
     async (text: string) => {
       if (!text.trim() || pending) return;
       const userMsg: Message = { id: "tmp", role: "user", content: text, created_at: new Date().toISOString() };
-      setPending({ user: userMsg, phase: "Opening the book…", text: "" });
+      setPending({ user: userMsg, phase: "Opening the book…", text: "", steps: [] });
       setRestoreOverlay(null);
       setPane("chat");
       try {
         const turn = await api.send(bookId, sid, text, (e) =>
-          setPending((p) => p && (e.type === "phase" ? { ...p, phase: e.label } : { ...p, text: p.text + e.text })),
+          setPending((p) => {
+            if (!p) return p;
+            // A new phase means the text so far was the agent's reasoning; it comes back in a step.
+            if (e.type === "phase") return { ...p, phase: e.label, text: "" };
+            if (e.type === "step") return { ...p, steps: [...p.steps, e.step] };
+            if (e.type === "reasoning") return { ...p, reasoning: e.reasoning };
+            return { ...p, text: p.text + e.text };
+          }),
         );
         setMessages((m) => [...(m ?? []), turn.user, turn.assistant]);
-        setGraph(turn.graph);
+        if (turn.graph) setGraph(turn.graph);
         setActive(turn.assistant.id);
+        if (turn.actions?.includes("inkitt_token_required")) setInkittRetry(text);
         if (turn.storyline && !sid) {
           toast(`Your what-if branched a new storyline: “${turn.storyline.title}”`, "success");
           nav(`/read/${bookId}/${turn.storyline.id}`);
@@ -114,6 +127,16 @@ export default function Workspace() {
   return (
     <div className="flex h-[calc(100dvh-4rem)] flex-col">
       {forkOverlay}
+      <InkittTokenModal
+        open={inkittRetry !== null}
+        onClose={() => setInkittRetry(null)}
+        onSaved={() => {
+          const text = inkittRetry;
+          setInkittRetry(null);
+          toast("Inkitt connected.", "success");
+          if (text) send(text);
+        }}
+      />
       {/* top bar */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line/60 px-4 py-2.5">
         <Link to={`/books/${book.id}`} className="flex items-center gap-1.5 text-sm text-ink-mute hover:text-gold" title="Back to book">
@@ -343,10 +366,12 @@ function Chat({
             <>
               <UserBubble m={pending.user} />
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card max-w-[92%] p-4">
+                {pending.steps.length > 0 && <div className="mb-3 border-b border-line/60 pb-3"><TraceSteps steps={pending.steps} /></div>}
                 {pending.text ? (
                   <div className="prose-story text-[15px]">
                     <Markdown text={pending.text} />
                     <motion.span className="ml-0.5 inline-block h-4 w-0.5 translate-y-0.5 bg-gold" animate={{ opacity: [1, 0] }} transition={{ duration: 0.7, repeat: Infinity }} />
+                    {pending.reasoning && <ReasoningChain reasoning={pending.reasoning} />}
                   </div>
                 ) : (
                   <div className="flex items-center gap-4">
@@ -447,7 +472,10 @@ function AssistantBubble({ m, active, reverted, onActivate, onShowGraph }: { m: 
           </button>
         </div>
       )}
-      <AnimatePresence>{why && m.trace && <TraceSteps trace={m.trace} />}</AnimatePresence>
+      <AnimatePresence>
+        {why && m.trace?.reasoning && <ReasoningChain key="chain" reasoning={m.trace.reasoning} />}
+        {why && m.trace && <TraceSteps key="steps" steps={m.trace.steps} />}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -480,7 +508,7 @@ function Citations({ items }: { items: Citation[] }) {
         {items.map((c, i) => (
           <button key={i} onClick={(e) => (e.stopPropagation(), setOpen(open === i ? null : i))}
             className={`rounded-md border px-2 py-0.5 text-[11px] transition ${open === i ? "border-gold/50 bg-gold-soft text-gold" : c.storyline_chunk ? "border-sage/30 text-sage" : "border-line text-ink-mute hover:text-ink"}`}>
-            {c.storyline_chunk ? "✦ storyline" : `${c.chapter ?? ""}${c.page ? ` · p. ${c.page}` : ""}`}
+            {c.storyline_chunk ? "✦ storyline" : [c.chapter, c.page && `p. ${c.page}`].filter(Boolean).join(" · ")}
           </button>
         ))}
       </div>
@@ -495,15 +523,48 @@ function Citations({ items }: { items: Citation[] }) {
   );
 }
 
-function TraceSteps({ trace }: { trace: RetrievalTrace }) {
+function ReasoningChain({ reasoning }: { reasoning: Reasoning }) {
+  return (
+    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="mt-3 overflow-hidden">
+      <p className="mb-2 text-[11px] uppercase tracking-wider text-ink-mute">Why this answer</p>
+      <ol className="space-y-2">
+        {reasoning.chain.map((l, i) => (
+          <motion.li key={i} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.08 }} className="rounded-lg border border-line/60 px-3 py-2 text-sm">
+            {l.kind === "relation" ? (
+              <div className="flex flex-wrap items-center gap-1.5 font-medium text-ink">
+                <span>{l.src}</span>
+                <span className="rounded bg-violet/10 px-1.5 py-0.5 text-[10px] tracking-wider text-violet">{l.rel.replace(/_/g, " ")} →</span>
+                <span>{l.dst}</span>
+              </div>
+            ) : (
+              <div className="text-ink">
+                <span className="mr-1.5 rounded bg-gold-soft px-1.5 py-0.5 text-[10px] tracking-wider text-gold">
+                  {["EVENT", l.chapter, l.page && `p. ${l.page}`].filter(Boolean).join(" · ")}
+                </span>
+                {l.summary}
+                {l.names.length > 0 && <span className="block text-xs text-ink-mute">{l.names.join(", ")}</span>}
+              </div>
+            )}
+            <p className="mt-1 font-serif text-[13px] italic text-ink-soft">{l.why}</p>
+          </motion.li>
+        ))}
+      </ol>
+      <p className="mt-2 text-sm text-ink">∴ {reasoning.conclusion}</p>
+    </motion.div>
+  );
+}
+
+function TraceSteps({ steps }: { steps: TraceStep[] }) {
   return (
     <motion.ol initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="relative mt-3 space-y-3 overflow-hidden pl-5">
       <span className="absolute bottom-2 left-[5px] top-2 w-px bg-violet/30" />
-      {trace.steps.map((s, i) => (
+      {steps.map((s, i) => (
         <motion.li key={i} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.08 }} className="relative text-sm">
           <span className="absolute -left-5 top-1.5 size-2.5 rounded-full border-2 border-violet bg-bg" />
           <span className="font-medium text-ink">{s.label}</span>
-          <span className="block text-xs text-ink-soft">{s.detail}</span>
+          {s.why && <span className="block font-serif italic text-ink-soft">{s.why}</span>}
+          {s.found && <span className="block text-xs text-ink">→ {s.found}</span>}
+          <span className="block text-xs text-ink-mute">{s.detail}</span>
         </motion.li>
       ))}
     </motion.ol>
@@ -524,7 +585,7 @@ function GraphHeader({ overlay, activeMsg, restoreLabel, onClear }: { overlay: O
   } else if (overlay?.kind === "trace") {
     const t = overlay.trace;
     title = activeMsg?.route === "global" ? "Why: big-picture summary" : "Why this answer";
-    detail = t.communities.length ? `${t.communities.length} communities summarised` : t.seeds.length ? `${t.seeds.length} seed${t.seeds.length > 1 ? "s" : ""} → ${t.expanded.length} nodes reached in ${t.hops} hop · ${t.edges.length} relations walked` : "Nothing matched in the graph";
+    detail = t.reasoning?.chain.length ? `${t.reasoning.chain.length} linked facts behind the answer` : t.communities.length ? `${t.communities.length} communities summarised` : t.seeds.length ? `${t.seeds.length} seed${t.seeds.length > 1 ? "s" : ""} → ${t.expanded.length} nodes reached in ${t.hops} hop · ${t.edges.length} relations walked` : "Nothing matched in the graph";
   }
   return (
     <div className="flex items-center gap-3 border-b border-line/60 px-4 py-2.5">

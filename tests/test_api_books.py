@@ -96,6 +96,16 @@ def test_list_get_and_progress(client):
     assert len(events) == 1 and '"status": "ready"' in events[0]
 
 
+def test_failed_books_hidden_from_public_library(client):
+    ok = _upload(client, _make_pdf([["A page of story text that is long enough to parse."]])).json()
+    bad = _upload(client, _make_pdf([["Another story page that will fail to ingest."]])).json()
+    books.set_status(bad["id"], "failed", "boom")
+
+    assert [b["id"] for b in client.get("/books").json()] == [ok["id"]]
+    mine = {b["id"]: b["status"] for b in client.get("/books?scope=mine").json()}
+    assert mine == {ok["id"]: "ready", bad["id"]: "failed"}
+
+
 def test_extraction_retries_failed_pages(client, monkeypatch):
     passes = iter([SimpleNamespace(failed={3: "429"}, blocked=[1]), SimpleNamespace(failed={}, blocked=[])])
     monkeypatch.setattr(ingestion, "generate_page_graphs", lambda _: next(passes))

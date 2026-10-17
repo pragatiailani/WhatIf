@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     falkor_password: str | None = None
 
     auth_secret: str  # signs sign-in tokens
+    secrets_key: str = ""  # encrypts stored third-party tokens; empty derives it from auth_secret
 
     server_host: str = "127.0.0.1"
     server_port: int = 8000
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     azure_llm_api_version: str = DEFAULT_AZURE_LLM_API_VERSION
     azure_llm_model: str = DEFAULT_AZURE_LLM_MODEL
     azure_embedding_model: str = ""  # embedding deployment; empty disables embed_sim in merges
+    azure_embedding_dimensions: int = 0  # shorten vectors (text-embedding-3 only); 0 = full size
 
     extraction_batch_size: int = DEFAULT_EXTRACTION_BATCH_SIZE
     merge_concurrency: int = DEFAULT_MERGE_CONCURRENCY

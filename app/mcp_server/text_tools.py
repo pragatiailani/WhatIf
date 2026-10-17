@@ -1,8 +1,10 @@
-"""Text tools: passages, keyword search, chapter summaries and entity timelines."""
+"""Text tools: passages, hybrid (keyword + meaning) search, chapter summaries and timelines."""
 
 import re
+from collections.abc import Sequence
 from typing import Any
 
+from app import retrieval
 from app.constants import (
     TOOL_MAX_CHUNKS_PER_CALL,
     TOOL_MAX_RESULTS,
@@ -21,7 +23,7 @@ def _pages(chunk: Chunk) -> list[int]:
     return sorted({s.page for s in chunk.page_spans})
 
 
-def _chunk_ref(chunk: Chunk) -> dict[str, Any]:
+def chunk_ref(chunk: Chunk) -> dict[str, Any]:
     pages = _pages(chunk)
     return {
         "chunk_id": chunk.id,
@@ -39,17 +41,17 @@ def get_chunks(book_id: str, chunk_ids: list[str]) -> dict[str, Any]:
     found = [c for c in chunks.get_chunks(chunk_ids) if c.book_id == book_id]
     got = {c.id for c in found}
     return {
-        "chunks": [{**_chunk_ref(c), "text": c.text} for c in found],
+        "chunks": [{**chunk_ref(c), "text": c.text} for c in found],
         "missing": [i for i in chunk_ids if i not in got],
     }
 
 
-def _snippet(text: str, terms: list[str]) -> str:
-    """About TOOL_SNIPPET_CHARS of text around the earliest query word."""
+def snippet(text: str, terms: list[str], size: int = TOOL_SNIPPET_CHARS) -> str:
+    """About `size` characters of text around the earliest query word (the start without one)."""
     hits = [m.start() for t in terms if (m := re.search(re.escape(t), text, re.IGNORECASE))]
     centre = min(hits) if hits else 0
-    start = max(0, centre - TOOL_SNIPPET_CHARS // 4)
-    end = min(len(text), start + TOOL_SNIPPET_CHARS)
+    start = max(0, centre - size // 4)
+    end = min(len(text), start + size)
     return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
 
 
@@ -77,32 +79,69 @@ def _resolve_chapter(book_id: str, name: str) -> dict[str, Any]:
     raise ValueError(f"no chapter matches '{name}'. Chapters: {titles}")
 
 
-def search_chunks(
-    book_id: str, query: str, chapter: str | None = None, limit: int = 5
-) -> dict[str, Any]:
-    canon_scope(book_id)
+def rank_chunks(
+    book_id: str,
+    query: str,
+    chapter: str | None = None,
+    query_vec: Any = None,
+    extra: Sequence[Sequence[str]] = (),
+) -> tuple[list[tuple[Chunk, float, str]], int]:
+    """Chunks for `query`, best first, as (chunk, score, match), plus the keyword match count.
+
+    Keyword matches and the chunks closest in meaning (`query_vec`) are combined by reciprocal
+    rank fusion, together with any `extra` rankings of chunk ids (e.g. from the graph). `match`
+    says where a chunk came from: keyword, meaning, both, or graph. Without semantic or extra
+    rankings this is plain keyword search, scored as before.
+    """
     terms = list(dict.fromkeys(content_words(query)))
-    if not terms:
-        raise ValueError("query has no searchable words")
-    title = _resolve_chapter(book_id, chapter)["title"] if chapter else None
     phrase = " ".join(words(query))
     scored = []
-    for c in chunks.search(book_id, terms, chapter=title):
+    for c in chunks.search(book_id, terms, chapter=chapter) if terms else []:
         score = score_text(c.text, terms, phrase)
         if score:
             scored.append((score, c))
     scored.sort(key=lambda sc: (-sc[0], sc[1].seq))
-    top = scored[: min(max(limit, 1), TOOL_MAX_RESULTS)]
+    meaning = [ref for ref, _ in retrieval.semantic(book_id, "chunk", query_vec)]
+    if not meaning and not any(extra):
+        return [(c, score, "keyword") for score, c in scored], len(scored)
+
+    by_id = {c.id: c for _, c in scored}
+    wanted = [i for ranking in (meaning, *extra) for i in ranking if i not in by_id]
+    by_id.update({c.id: c for c in chunks.get_chunks(list(dict.fromkeys(wanted))) if c.book_id == book_id})
+    keep = {i for i, c in by_id.items() if chapter is None or c.chapter == chapter}
+    keyword = [c.id for _, c in scored]
+    rankings = [[i for i in r if i in keep] for r in (keyword, meaning, *extra)]
+    by_keyword, by_meaning = set(keyword), set(meaning)
+
+    def match(i: str) -> str:
+        if i in by_keyword:
+            return "both" if i in by_meaning else "keyword"
+        return "meaning" if i in by_meaning else "graph"
+
+    return [(by_id[i], score, match(i)) for i, score in retrieval.fuse(*rankings)], len(scored)
+
+
+def search_chunks(
+    book_id: str, query: str, chapter: str | None = None, limit: int = 5
+) -> dict[str, Any]:
+    canon_scope(book_id)
+    query_vec = retrieval.embed_query(query)
+    terms = list(dict.fromkeys(content_words(query)))
+    if not terms and query_vec is None:
+        raise ValueError("query has no searchable words")
+    title = _resolve_chapter(book_id, chapter)["title"] if chapter else None
+    ranked, keyword_matches = rank_chunks(book_id, query, title, query_vec)
+    top = ranked[: min(max(limit, 1), TOOL_MAX_RESULTS)]
     return {
         "results": [
-            {**_chunk_ref(c), "score": round(score, 3), "snippet": _snippet(c.text, terms)}
-            for score, c in top
+            {**chunk_ref(c), "score": round(score, 4), "match": how, "snippet": snippet(c.text, terms)}
+            for c, score, how in top
         ],
-        "total_matches": len(scored),
+        "total_matches": keyword_matches,
     }
 
 
-def _event_out(event: GraphEvent, chunk_ids: dict[int, str]) -> dict[str, Any]:
+def event_out(event: GraphEvent, chunk_ids: dict[int, str]) -> dict[str, Any]:
     seq = int(event.story_pos // 1000)
     return {
         "key": event.key,
@@ -124,7 +163,7 @@ def get_timeline(book_id: str, entity: str) -> dict[str, Any]:
     ids = chunks.ids_by_seq(book_id, {int(e.story_pos // 1000) for e, _ in shown})
     return {
         "entity": {"key": found["key"], "name": found["name"]},
-        "events": [{**_event_out(e, ids), "role": role} for e, role in shown],
+        "events": [{**event_out(e, ids), "role": role} for e, role in shown],
         "total": len(rows),
         "truncated": len(rows) > len(shown),
     }
@@ -155,7 +194,7 @@ def get_chapter_summary(book_id: str, chapter: str) -> dict[str, Any]:
             {**entity_out(top[k]), "events_in_chapter": counts[k]} for k in top_keys if k in top
         ],
         "events": [
-            {**_event_out(e, ids), "main_participants": [names[k] for k in keys if k in names]}
+            {**event_out(e, ids), "main_participants": [names[k] for k in keys if k in names]}
             for e, keys in shown
         ],
         "total_events": len(rows),

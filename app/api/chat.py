@@ -1,16 +1,19 @@
-"""Chat endpoints for trying the agent: list books, open a session, ask, read the history.
+"""Chat endpoints for trying the agent: open a session, ask, read the history. Books are listed by
+`app.api.books`.
 
-There is no authentication yet; anyone who can reach the API can use any book and session.
+Signing in is optional. A session opened while signed in belongs to that user: only they can chat
+in it, and its agent can use their Inkitt account. Anonymous sessions are open to anyone.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents import get_agent
+from app.api.auth import optional_user
 from app.repo import books, sessions
-from app.repo.models import ChatSession
+from app.repo.models import ChatSession, User
 
 router = APIRouter(tags=["chat"])
 AGENT = "book_qa"
@@ -24,19 +27,15 @@ class Question(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
 
 
-@router.get("/books")
-def list_books() -> list[dict[str, Any]]:
-    return [
-        {"id": b.id, "title": b.title, "author": b.author, "status": b.status}
-        for b in books.list_books()
-    ]
-
-
 @router.post("/sessions", status_code=201)
-def create_session(body: NewSession) -> dict[str, Any]:
+def create_session(
+    body: NewSession, user: Annotated[User | None, Depends(optional_user)]
+) -> dict[str, Any]:
     if books.get_book(body.book_id) is None:
         raise HTTPException(404, f"unknown book '{body.book_id}'")
-    session = sessions.create_session(ChatSession(book_id=body.book_id))
+    session = sessions.create_session(
+        ChatSession(book_id=body.book_id, user_id=user.id if user else None)
+    )
     return {"session_id": session.id, "book_id": session.book_id}
 
 
@@ -56,9 +55,18 @@ def get_messages(session_id: str, limit: int = 50) -> list[dict[str, Any]]:
 
 
 @router.post("/sessions/{session_id}/chat")
-async def chat(session_id: str, body: Question) -> dict[str, Any]:
+async def chat(
+    session_id: str, body: Question, user: Annotated[User | None, Depends(optional_user)]
+) -> dict[str, Any]:
     session = sessions.get_session(session_id)
     if session is None:
         raise HTTPException(404, f"unknown session '{session_id}'")
+    if session.user_id is not None and (user is None or user.id != session.user_id):
+        raise HTTPException(403, "this chat belongs to another user")
     result = await get_agent(AGENT).run(session.book_id, session_id, body.question)
-    return {"answer": result["answer"], "citations": result["citations"], "trace": result["trace"]}
+    return {
+        "answer": result["answer"],
+        "citations": result["citations"],
+        "trace": result["trace"],
+        "actions": result.get("actions", []),
+    }
