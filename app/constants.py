@@ -55,6 +55,8 @@ MIN_QUOTE_MATCH = 0.8
 
 # LLM and embedding calls in flight at once while merging page graphs.
 DEFAULT_MERGE_CONCURRENCY = 8
+# Merge passes per ingestion; saved nodes are skipped, so each pass retries only the failed ones.
+MERGE_ATTEMPTS = 3
 
 # Candidate pairs (entities + events) per judge call; more are split over several calls.
 MERGE_MAX_CANDIDATES_PER_CALL = 40
