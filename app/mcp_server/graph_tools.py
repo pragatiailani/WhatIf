@@ -11,6 +11,7 @@ from app.constants import (
     TOOL_MAX_NEIGHBORS,
     TOOL_MAX_PATH_HOPS,
     TOOL_MAX_RESULTS,
+    TOOL_EXPAND_PER_NODE,
 )
 from app.mcp_server.common import canon_scope, entity_out, relation_out, resolve, short
 from app.mcp_server.matching import content_words, match_entities
@@ -43,7 +44,7 @@ def get_neighbors(book_id: str, entity: str, hops: int = 1, limit: int = 25) -> 
     neighbors: list[dict[str, Any]] = []
     for hop in range(1, hops + 1):
         next_frontier: list[str] = []
-        for origin, rel, other in graph.expand(scope, frontier):
+        for origin, rel, other in graph.expand(scope, frontier, per_node_limit=TOOL_EXPAND_PER_NODE):
             if other.key in seen:
                 continue
             seen.add(other.key)
@@ -75,7 +76,7 @@ def find_path(book_id: str, a: str, b: str) -> dict[str, Any]:
         frontier = frontier[:TOOL_MAX_FRONTIER]
         next_frontier: list[str] = []
         for i in range(0, len(frontier), TOOL_BFS_BATCH):
-            for origin, rel, other in graph.expand(scope, frontier[i : i + TOOL_BFS_BATCH]):
+            for origin, rel, other in graph.expand(scope, frontier[i : i + TOOL_BFS_BATCH], per_node_limit=TOOL_EXPAND_PER_NODE):
                 if other.key in visited:
                     continue
                 visited.add(other.key)

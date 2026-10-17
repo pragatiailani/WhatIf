@@ -7,6 +7,7 @@ BOOKS_COLLECTION = "books"
 CHUNKS_COLLECTION = "chunks"
 MENTIONS_COLLECTION = "mentions"
 GRAPH_LEVELS_COLLECTION = "graph_levels"
+CHUNK_VECTORS_COLLECTION = "chunk_vectors"
 
 # --- Auth ----------------------------------------------------------------
 
@@ -27,8 +28,8 @@ ENTITY_TYPES = ("Character", "Place", "Organization", "Group", "Object", "Concep
 # communities from community detection; none of them is extracted as an entity.
 NODE_TYPES = (*ENTITY_TYPES, "Event", "Chapter", "Community")
 
-# Story relations between two entities: the vocabulary the LLM extracts from. Anything else the
-# LLM invents maps to FALLBACK_REL.
+# Story relations: the vocabulary the LLM extracts from. Anything else the LLM invents maps to
+# FALLBACK_REL.
 REL_VOCABULARY = frozenset(
     {
         "FRIEND_OF", "ENEMY_OF", "RIVAL_OF", "LOVES", "MARRIED_TO", "PARENT_OF", "CHILD_OF",
@@ -39,13 +40,14 @@ REL_VOCABULARY = frozenset(
     }
 )  # fmt: skip
 FALLBACK_REL = "OTHER"
-# Edges built in code, never by the LLM: event -> participant / place / later or caused event,
-# node -> chapter / community.
-STRUCTURAL_RELS = frozenset({"INVOLVES", "AT", "BEFORE", "CAUSES", "IN_CHAPTER", "IN_COMMUNITY"})
+# Edges built in code, never by the LLM.
+STRUCTURAL_RELS = frozenset(
+    {"INVOLVES", "AT", "BEFORE", "CAUSES", "IN_CHAPTER", "IN_COMMUNITY"}
+)
 
 # Pages sent to the LLM at the same time during per-page graph generation.
 DEFAULT_EXTRACTION_BATCH_SIZE = 10
-# Extraction passes per ingestion; each pass retries only the pages that failed (rate limits etc.).
+# Extraction passes per ingestion; each pass retries only the pages that failed.
 EXTRACTION_ATTEMPTS = 3
 
 # Minimum fraction of an evidence quote that must be found in the chunk to accept the match.
@@ -65,7 +67,7 @@ MERGE_MIN_SAME_CONFIDENCE = 0.7
 
 # Name similarity (0-1) at or above which two same-type entities go to the judge.
 MERGE_NAME_SIM_CANDIDATE = 0.75
-# Description embedding similarity at or above which two same-type entities go to the judge.
+# Description embedding similarity (0-1) at or above which two same-type entities go to the judge.
 MERGE_EMBED_SIM_CANDIDATE = 0.85
 # Identical names are merged in code unless their embedding similarity is below this.
 MERGE_MIN_EMBED_FOR_AUTO = 0.5
@@ -88,11 +90,30 @@ GRAPH_NAME_PREFIX = "book_"
 # Node labels that get a `key` index when a book graph is created.
 KEY_INDEXED_LABELS = ("Entity", "Event")
 
+# Other properties the read queries filter or sort on: (label, property).
+PROPERTY_INDEXES = (
+    ("Event", "story_pos"),
+    ("Event", "chapter"),
+    ("Chapter", "title"),
+)
+
+# Node labels that get a vector index on `embedding` once embeddings exist.
+# `Chunk` nodes are optional: only use this label if chunk nodes are actually written to FalkorDB.
+VECTOR_INDEXED_LABELS = ("Entity", "Event", "Chunk")
+VECTOR_SIMILARITY = "cosine"
+
 # Properties stripped from read results (large, only used by vector search).
 OMITTED_GRAPH_PROPS = frozenset({"embedding"})
 
 # Default cap on edges returned by `graph.entity_relations`.
 DEFAULT_RELATION_LIMIT = 50
+# Chunk ids kept on a relation / event node, so a tool can point at its evidence directly.
+MAX_EDGE_CHUNK_IDS = 5
+
+# Rows per write query when loading vectors (each row carries a full embedding).
+VECTOR_WRITE_BATCH = 100
+# Seconds the name index of a book (every entity's name and aliases) is kept in memory.
+ENTITY_INDEX_TTL_SECONDS = 300
 
 # Substring of the FalkorDB error raised when an index already exists.
 FALKOR_INDEX_EXISTS_ERROR = "already indexed"
@@ -118,13 +139,55 @@ TOOL_MAX_HISTORY = 50  # get_history
 TOOL_DESCRIPTION_CHARS = 400  # entity description length in tool results
 TOOL_MAX_NEIGHBORS = 50  # get_neighbors / get_relations
 TOOL_BFS_BATCH = 100  # nodes per expand() query in find_path
+TOOL_EXPAND_PER_NODE = 30  # strongest edges taken from each node when expanding
+TOOL_MAX_EVIDENCE = 20  # get_evidence
+TOOL_PASSAGE_CHARS = 700  # retrieve: length of each returned passage excerpt
 
-# --- Book Q&A agent ----------------------------------------------------------
+# --- Retrieval ------------------------------------------------------------
+
+# Name matching: a question word this similar (0-100) to a name word counts as that word.
+FUZZY_NAME_CUTOFF = 85
+FUZZY_MIN_WORD_LEN = 4
+FUZZY_PENALTY = 0.9  # a fuzzy name match scores at most this fraction of an exact one
+# Lexical score at or above which a name hit is "strong": no embedding fallback needed.
+STRONG_NAME_SCORE = 0.8
+# Semantic entity hits need at least this cosine similarity and score at most SEMANTIC_WEIGHT.
+SEMANTIC_MIN_SIM = 0.3
+SEMANTIC_WEIGHT = 0.7
+SEMANTIC_ENTITY_K = 5
+# Reciprocal-rank-fusion constant used to merge keyword and vector rankings.
+RRF_K = 60
+# Chunk candidates asked from the vector index per search (before chapter / page filtering).
+VECTOR_CHUNK_K = 40
+# Keyword search looks only at chunks containing one of the rarest query words.
+KEYWORD_RAREST_TERMS = 3
+KEYWORD_CANDIDATE_CAP = 600
+# Term-frequency saturation (BM25 k1) for keyword scoring.
+KEYWORD_TF_K1 = 1.2
+# retrieve(): linked entities / events / passages returned.
+RETRIEVE_ENTITIES = 4
+RETRIEVE_RELATIONS_PER_ENTITY = 6
+RETRIEVE_EVENTS = 6
+RETRIEVE_PASSAGES = 6
+
+# --- Communities ----------------------------------------------------------
+
+COMMUNITY_MIN_SIZE = 3  # entities
+COMMUNITY_MAX_LEVELS = 3  # level 0 = most detailed
+COMMUNITY_PROMPT_ENTITIES = 25  # members described to the LLM per community
+COMMUNITY_PROMPT_RELATIONS = 20
+COMMUNITY_DESCRIPTION_CHARS = 240
+COMMUNITY_SEED = 42
+DEFAULT_EMBEDDING_BATCH_SIZE = 64
+EMBED_TEXT_CHARS = 6000  # longest text sent to the embedding model
+
+# --- Book Q&A agent -------------------------------------------------------
 
 DEFAULT_CHAT_HISTORY_BUDGET = 6000  # tokens of conversation before older turns are summarised
-HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
+HISTORY_KEEP_MESSAGES = 6  # most recent turns kept verbatim when summarising
 MAX_MODEL_CALLS = 15  # model calls per question (tool loop bound)
 MAX_CITATIONS = 8
 # Tools the model may call; the conversation is already in its context.
 AGENT_EXCLUDED_TOOLS = frozenset({"get_history", "get_session_summary"})
 TITLE_CHARS = 60
+

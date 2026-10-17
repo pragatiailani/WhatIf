@@ -50,3 +50,21 @@ def delete_for_chunk(chunk_id: str) -> int:
 
 def delete_mentions(book_id: str) -> int:
     return _col().delete_many({"book_id": book_id}).deleted_count
+
+
+def rekey_by_sources(book_id: str, mappings: Sequence[tuple[int, str, str]]) -> int:
+    """Rekey mentions using (chunk_seq, old_key, surviving_key) mappings.
+
+    The chunk sequence is important: identical page-level keys can refer to different
+    entities in different chunks before the merge resolves them.
+    """
+    changed = 0
+    for chunk_seq, old_key, new_key in mappings:
+        if old_key == new_key:
+            continue
+        result = _col().update_many(
+            {"book_id": book_id, "chunk_seq": chunk_seq, "node_key": old_key},
+            {"$set": {"node_key": new_key}},
+        )
+        changed += result.modified_count
+    return changed

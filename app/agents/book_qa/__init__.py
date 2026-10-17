@@ -27,7 +27,7 @@ from app.repo.checkpoints import get_checkpointer
 from app.repo.models import Message
 
 NAME = "book_qa"
-CITING_TOOLS = {"get_chunks": "chunks", "search_chunks": "results"}
+CITING_TOOLS = {"get_chunks": "chunks", "search_chunks": "results", "get_evidence": "evidence"}
 
 
 def build_agent(llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None):
@@ -60,11 +60,19 @@ def _citations_from(tool: str, text: str) -> list[dict]:
         items = json.loads(text).get(CITING_TOOLS[tool], [])
     except (ValueError, AttributeError):
         return []
-    return [
-        {k: i.get(k) for k in ("chunk_id", "chapter", "page_start", "page_end", "seq")}
-        for i in items
-        if isinstance(i, dict) and i.get("chunk_id")
-    ]
+    citations = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("chunk_id"):
+            continue
+        page = item.get("page")
+        citations.append({
+            "chunk_id": item.get("chunk_id"),
+            "chapter": item.get("chapter"),
+            "page_start": item.get("page_start", page),
+            "page_end": item.get("page_end", page),
+            "seq": item.get("seq"),
+        })
+    return citations
 
 
 def _this_turn(messages: list[BaseMessage]) -> list[BaseMessage]:

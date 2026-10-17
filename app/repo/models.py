@@ -154,7 +154,9 @@ class GraphEntity(BaseModel):
     first_page: int | None = None
     last_page: int | None = None
     mention_count: int = 0
-    community_id: int | None = None
+    notes: list[str] = Field(default_factory=list)  # per-page descriptions ...
+    note_pages: list[int] = Field(default_factory=list)  # ... and the page of each (parallel)
+    community_id: int | None = None  # finest community the entity belongs to
     sid: str | None = None
     created_by_op: int | None = None
 
@@ -166,6 +168,7 @@ class GraphEvent(BaseModel):
     story_time: str | None = None
     chapter: str | None = None
     first_page: int | None = None
+    chunk_ids: list[str] = Field(default_factory=list)  # chunks that tell the event
     embedding: list[float] | None = None
     sid: str | None = None
     created_by_op: int | None = None
@@ -179,5 +182,7 @@ class GraphRelation(BaseModel):
     description: str = ""
     weight: float = 1.0
     story_pos: float | None = None
+    first_page: int | None = None  # page where the relation first appears (spoiler guard)
+    chunk_ids: list[str] = Field(default_factory=list)  # a few chunks that state it
     sid: str | None = None
     created_by_op: int | None = None

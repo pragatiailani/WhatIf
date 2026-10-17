@@ -66,7 +66,16 @@ def search(
     }
     if chapter is not None:
         query["chapter"] = chapter
-    return [Chunk.model_validate(d) for d in _col().find(query).sort("seq", ASCENDING).limit(limit)]
+    # Do not take the first N matches in narrative order: that systematically favors the
+    # beginning of a book. Rank the matching candidates by distinct term coverage and frequency.
+    candidates = []
+    for doc in _col().find(query):
+        text = str(doc.get("text", "")).lower()
+        coverage = sum(1 for term in terms if term.lower() in text)
+        frequency = sum(text.count(term.lower()) for term in terms)
+        candidates.append((coverage, frequency, -int(doc.get("seq", 0)), doc))
+    candidates.sort(key=lambda row: (-row[0], -row[1], -row[2]))
+    return [Chunk.model_validate(row[3]) for row in candidates[: max(1, limit)]]
 
 
 def list_chapters(book_id: str) -> list[dict]:

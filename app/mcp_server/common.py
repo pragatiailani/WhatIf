@@ -39,6 +39,9 @@ def relation_out(rel: GraphRelation, origin: str) -> dict[str, Any]:
         "description": short(rel.description),
         "weight": rel.weight,
         "first_pos": rel.story_pos,
+        "first_page": rel.first_page,
+        "pages": rel.pages,
+        "evidence_chunk_ids": rel.chunk_ids,
     }
 
 

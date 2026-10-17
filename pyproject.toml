@@ -53,9 +53,6 @@ dev = [
     "types-requests",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["app"]
-
 [tool.uv]
 dev-dependencies = [
     "pytest>=7.4.0",

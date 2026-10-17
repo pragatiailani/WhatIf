@@ -65,6 +65,12 @@ def get_chunks(book_id: str, chunk_ids: list[str]) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_evidence(book_id: str, entity: str, limit: int = 10) -> dict[str, Any]:
+    """Source quotes for an entity name/key or an event key, with chunk and page citations."""
+    return text_tools.get_evidence(book_id, entity, limit)
+
+
+@mcp.tool()
 def search_chunks(
     book_id: str, query: str, chapter: str | None = None, limit: int = 5
 ) -> dict[str, Any]:
