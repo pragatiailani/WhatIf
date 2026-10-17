@@ -1,0 +1,134 @@
+"""Typed records returned and accepted by the repository layer."""
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+def new_id() -> str:
+    return uuid4().hex
+
+
+def utcnow() -> datetime:
+    """Current UTC time truncated to milliseconds, the precision Mongo stores."""
+    now = datetime.now(timezone.utc)
+    return now.replace(microsecond=now.microsecond // 1000 * 1000)
+
+
+class _Doc(BaseModel):
+    """Mongo document: `id` maps to `_id`."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str = Field(default_factory=new_id, alias="_id")
+
+    def to_mongo(self) -> dict[str, Any]:
+        return self.model_dump(by_alias=True)
+
+
+# --- Mongo ---------------------------------------------------------------
+
+BookStatus = Literal["queued", "parsing", "extracting", "merging", "indexing", "ready", "failed"]
+Visibility = Literal["public", "private"]
+
+
+class Book(_Doc):
+    title: str
+    author: str | None = None
+    content_hash: str
+    owner_id: str | None = None  # None for catalog books
+    visibility: Visibility = "private"
+    shared_with: list[str] = Field(default_factory=list)
+    status: BookStatus = "queued"
+    error: str | None = None
+    stats: dict[str, int] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class PageSpan(BaseModel):
+    page: int
+    char_start: int
+    char_end: int
+
+
+class Chunk(_Doc):
+    book_id: str
+    seq: int
+    chapter: str | None = None
+    text: str
+    page_spans: list[PageSpan] = Field(default_factory=list)
+    token_count: int | None = None
+
+
+class Mention(_Doc):
+    book_id: str
+    node_key: str  # Entity/Event key in the graph
+    chunk_id: str
+    chunk_seq: int
+    quote: str
+    char_start: int  # offsets within the chunk text
+    char_end: int
+    page: int
+
+
+class GraphPayload(BaseModel):
+    """An intermediate (pre-Falkor) graph. Item shapes are owned by extraction/merge."""
+
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GraphLevel(_Doc):
+    book_id: str
+    level: int  # 0 = per-chunk graphs
+    index: int  # position within the level
+    seq_start: int  # first chunk seq covered
+    seq_end: int  # last chunk seq covered (inclusive)
+    graph: GraphPayload
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+# --- Falkor --------------------------------------------------------------
+
+
+class GraphEntity(BaseModel):
+    key: str
+    name: str
+    type: str
+    aliases: list[str] = Field(default_factory=list)
+    description: str = ""
+    embedding: list[float] | None = None
+    first_page: int | None = None
+    last_page: int | None = None
+    mention_count: int = 0
+    community_id: int | None = None
+    sid: str | None = None
+    created_by_op: int | None = None
+
+
+class GraphEvent(BaseModel):
+    key: str
+    summary: str
+    story_pos: float
+    story_time: str | None = None
+    chapter: str | None = None
+    first_page: int | None = None
+    embedding: list[float] | None = None
+    sid: str | None = None
+    created_by_op: int | None = None
+
+
+class GraphRelation(BaseModel):
+    id: str = Field(default_factory=new_id)
+    src: str  # Entity key
+    dst: str  # Entity key
+    rel: str
+    description: str = ""
+    weight: float = 1.0
+    story_pos: float | None = None
+    sid: str | None = None
+    created_by_op: int | None = None
