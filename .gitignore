@@ -1,0 +1,33 @@
+# Virtual Environments
+.venv/
+
+# Python
+__pycache__/
+
+# Node
+node_modules/
+
+# Docker
+.docker/
+docker-compose.override.yml
+get-docker.sh
+
+# Database volumes
+db_data/
+mongo_data/
+falkor_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.env
+.env.local
+
+# OS
+Thumbs.db
+.DS_Store
+*.log

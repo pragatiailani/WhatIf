@@ -1,0 +1,252 @@
+# WhatIf?
+
+A chatbot that turns a book into a knowledge graph. You can ask it questions about the story, or rewrite the story into your own storyline. Each storyline is saved and persists across the session.
+
+Built with **LangGraph**, **FalkorDB** and **MongoDB**.
+
+---
+
+## Features
+
+- **Book ingestion.** The book is split into chunks, and one graph is built per chunk. Those graphs are then merged recursively, level by level, until one graph represents the whole book.
+- **Grounded Q&A.** Answers come from the graph and the original text, with chapter and page citations.
+  - *Local search* answers specific questions (characters, events).
+  - *Global search* answers big-picture questions (themes, summaries).
+- **Storylines.** The user changes the plot ("what if Ravi never left Delhi?"). The bot rewrites the affected events and answers later questions from the new storyline.
+- **Checkpoints and undo.** Save points inside a storyline, with restore that can itself be undone.
+- **Forks.** Branch any storyline you can access into an independent copy.
+- **Sharing.** Books from the catalog are shared by everyone. User uploads and storylines are private unless the owner shares them.
+
+---
+
+## Architecture
+
+```
+            ┌──────────────┐     ┌──────────────────────────┐
+  Upload ──▶│  Ingestion   │────▶│ FalkorDB  book_<id>      │
+            │  (LangGraph) │     │  canon + storyline delta │
+            └──────┬───────┘     └────────────▲─────────────┘
+                   │                          │
+                   ▼                          │ repository layer
+            ┌──────────────┐     ┌────────────┴─────────────┐
+            │   MongoDB    │◀───▶│  Chat / Inference /      │◀── User
+            │ text, ops,   │     │  Storyline graphs        │
+            │ sessions     │     │  (LangGraph)             │
+            └──────────────┘     └──────────────────────────┘
+```
+
+| Store | Holds |
+|---|---|
+| FalkorDB | The final book graph (entities, events, communities, relations) plus storyline deltas tagged with `sid` |
+| MongoDB | Raw text, chunks, mentions/pages, intermediate merge levels, storyline op log, sessions, messages, LangGraph checkpoints |
+
+---
+
+## Pipelines
+
+### 1. Ingestion
+1. Upload the book. Create a `books` document and queue a job.
+2. Parse and clean: extract text, detect chapters, build `page_spans`.
+3. Chunk: about 1.5k tokens per chunk, with 10% overlap.
+4. Per-chunk extraction (LangGraph `Send` fan-out): the LLM returns entities, events and relations, each with an **evidence quote**.
+5. Save the level-0 chunk graphs to `graph_levels` and the mentions to `mentions`.
+6. Recursive merge: pair adjacent graphs, resolve entities (alias match, then embedding similarity, then an LLM judge), and merge with provenance kept. Repeat until one graph is left.
+7. Write the final graph to FalkorDB and create the vector indexes.
+8. Run community detection (Leiden) and write summaries. Set the book's status to `ready`.
+
+Ingestion is resumable. LangGraph's MongoDB checkpointer saves progress, so a crash at level N resumes from level N.
+
+### 2. Inference (questions)
+1. Load chat context: the rolling summary plus the last N turns.
+2. Rewrite the question so it stands alone, then route it: `local`, `global`, `canon` or `edit`.
+3. **Local:** match the seed entities by vector search, expand k hops in Cypher, and fetch the source chunks.
+4. **Global:** pick the top-k community summaries, then map-reduce partial answers.
+5. Assemble the context: rerank and fit it to the token budget.
+6. Answer with citations, run a grounding check, stream the response, and save the retrieval trace.
+7. If the grounding check fails, widen the search once. If it still fails, answer "not in the book".
+
+### 3. Chat management
+Open or resume a session (`thread_id`), then save the user message. If the history exceeds the token budget, fold the old turns into a rolling summary. Run the graph with the checkpointer, then save the assistant message (citations, tokens, trace). After the turn, set the title, update `last_active` and record feedback.
+
+### 4. Storyline update
+1. The router classifies the message as an `edit`.
+2. The LLM parses the edit into **ops**: `add_*`, `hide`, `modify`.
+3. Find the **divergence point**, the earliest `story_pos` the edit touches.
+4. Impact analysis: linked events after the divergence point are marked **stale** (hidden, not deleted).
+5. Generate a continuation passage and store it in `storyline_chunks`.
+6. Extract and resolve the passage with the ingestion extractor. Tag the results with `sid`.
+7. Consistency check against active canon. If it fails, ask the user to adjust the edit.
+8. Apply the ops: write the Mongo op log first, then the Falkor delta, and advance `head_op_seq`.
+9. Post-apply jobs: rewrite the dirty community summaries, and switch the storyline from delta to copy mode if it has grown large.
+10. Reply with a diff of what changed and the new passage.
+
+### 5. Checkpoints and forks
+- **Save checkpoint:** stores a name and `op_seq`. Nothing is copied.
+- **Restore to N:** auto-save the current head, revert ops after N in reverse order, and set the head to N. Reverted ops are marked, not deleted.
+- **Fork:** check access, create a storyline with `parent_storyline_id` and `fork_op_seq`, copy the ops up to `fork_op_seq` under the new `sid`, then materialize them.
+
+---
+
+## Storyline storage model
+
+- The canon graph is **never modified**. Storyline additions go into the same graph, tagged `sid`.
+- Removals use a per-storyline **hidden set** (`hidden_node_keys`, `hidden_edge_ids`).
+- Every query filters on `(sid IS NULL OR sid = $sid) AND NOT hidden`.
+- A heavy storyline (more than about 500 ops, or more than about 2k hidden items) switches to **copy mode**: `GRAPH.COPY` the base graph and replay the ops.
+- `storyline_ops` is the **source of truth**. Any storyline graph can be rebuilt from canon plus its ops.
+
+---
+
+## Page and event tracking
+
+- Chunks store `page_spans: [{page, char_start, char_end}]`.
+- Extraction returns an exact evidence quote. Fuzzy-match it to an offset in the chunk, then map the offset to a page. **Page numbers produced by the LLM are never used.**
+- Events are their own nodes, with `story_pos = chunk.seq * 1000 + order` (narrative order) and an optional `story_time` (in-world time, for flashbacks).
+- Falkor stores only `first_page`, `last_page` and `mention_count`. Full mentions live in the Mongo `mentions` collection.
+- Generated storyline events get a fractional `story_pos` (e.g. `5023.5`) and cite the storyline chunk, not a page.
+
+---
+
+## Data model
+
+### FalkorDB
+```
+(:Entity {key, name, type, aliases[], description, embedding,
+          first_page, last_page, mention_count, community_id, sid, created_by_op})
+(:Event  {key, summary, story_pos, story_time?, chapter, first_page,
+          embedding, sid, created_by_op})
+(:Community {cid, level, title, summary, embedding})
+-[:REL {rel, description, weight, story_pos, sid, created_by_op}]->
+-[:INVOLVES {role}]->  -[:AT]->  -[:BEFORE]->  -[:IN_COMMUNITY]->
+```
+
+### MongoDB collections
+| Collection | Purpose |
+|---|---|
+| `users` | Accounts |
+| `books` | Metadata, `content_hash`, visibility, access, status, stats |
+| `chunks` | Text, `seq`, chapter, `page_spans` |
+| `mentions` | Evidence quotes mapped to chunk, page and offsets |
+| `graph_levels` | Intermediate merge graphs per level and index |
+| `ingestion_jobs` | Progress and errors for each ingestion run |
+| `communities` | Canon community summaries and embeddings |
+| `storylines` | Mode, head/applied seq, hidden sets, parent/fork info, visibility |
+| `storyline_ops` | Append-only op log (`applied`/`reverted`) |
+| `storyline_chunks` | Generated narrative passages |
+| `storyline_checkpoints` | Named save points (`op_seq`) |
+| `community_overrides` | Per-storyline community summaries |
+| `chat_sessions` | Session with `book_id`, `storyline_id`, rolling summary |
+| `messages` | Content, intent, route, citations, op_seqs, trace, feedback |
+| `checkpoints`, `checkpoint_writes` | Managed by LangGraph `MongoDBSaver` |
+
+See `docs/schema.md` for the full field-level schema.
+
+---
+
+## Engineering rules
+
+1. **All graph access goes through the repository layer.** It injects the `sid` and hidden-set filter and checks access. Tools never run raw Cypher.
+2. **The op log comes first.** Write ops to Mongo before Falkor. On failure, replay from `falkor_applied_seq`.
+3. **Pages come from evidence.** Never take a page number from LLM output.
+4. **Canon is immutable.** Storylines only add tagged items or hide existing ones.
+5. **Isolation is tested.** A test asserts that one storyline's content never appears in another storyline's answers.
+
+---
+
+## Proposed project structure
+
+```
+whatif/
+├── app/
+│   ├── api/              # REST/streaming endpoints
+│   ├── graphs/           # LangGraph: ingestion, inference, storyline
+│   ├── extraction/       # prompts, parsers, evidence matching
+│   ├── merge/            # pairing, entity resolution, merge
+│   ├── retrieval/        # local, global, rerank, context
+│   ├── storyline/        # ops, impact, checkpoints, forks
+│   ├── repo/             # repository layer (Falkor + Mongo)
+│   └── config.py
+├── evals/                # question sets + runner
+├── tests/
+├── docs/schema.md
+├── docker-compose.yml
+└── README.md
+```
+
+---
+
+## Getting started
+
+### Prerequisites
+- Python 3.10+
+- Docker & Docker Compose
+- [UV](https://docs.astral.sh/uv/) (fast Python package manager)
+
+### Setup
+
+1. **Install UV** (if not already installed):
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (via PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Or use Homebrew/Chocolatey
+brew install uv  # macOS
+choco install uv  # Windows
+```
+
+2. **Clone and setup**:
+```bash
+git clone <repo>
+cd storyline
+cp .env.example .env          # Copy template and update with your secrets
+# Edit .env and set secure passwords for MongoDB, LLM keys, etc.
+```
+
+⚠️ **Security:** `.env` is in `.gitignore` — never commit passwords or API keys. Use a secure password manager to generate strong credentials.
+
+3. **Install dependencies** (using UV):
+```bash
+uv sync                       # Install from pyproject.toml
+```
+
+4. **Start databases**:
+```bash
+docker compose up -d          # FalkorDB + MongoDB
+docker compose ps             # Verify services are running
+```
+
+5. **Run the FastAPI server**:
+```bash
+uv run fastapi dev app/main.py
+# Server runs at http://localhost:8000
+# Docs at http://localhost:8000/docs
+```
+
+6. **CLI commands** (optional):
+```bash
+uv run python -m app.cli ingest path/to/book.pdf
+uv run python -m app.cli chat --book <book_id>
+```
+
+### Docker management
+
+```bash
+docker compose up -d          # Start services in background
+docker compose down           # Stop services
+docker compose logs -f        # View logs
+docker compose ps             # Check status
+```
+
+### Environment variables
+| Variable | Description | Default |
+|---|---|---|
+| `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` | Model used for extraction and answers | - |
+| `EMBED_MODEL` | Embedding model | - |
+| `MONGO_URI`, `MONGO_DB` | MongoDB connection | `mongodb://admin:admin@localhost:27017` |
+| `FALKOR_HOST`, `FALKOR_PORT` | FalkorDB connection | `localhost:6379` |
+| `CHUNK_TOKENS`, `CHUNK_OVERLAP` | Chunking settings | `1500, 0.1` |
+| `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
+| `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |
