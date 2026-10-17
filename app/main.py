@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import repo
-from app.api import auth, books, chat, reading
+from app.api import auth, books, chat, memories, reading
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ app.include_router(chat.router)
 app.include_router(auth.router)
 app.include_router(books.router)
 app.include_router(reading.router)
+app.include_router(memories.router)
 
 
 if __name__ == "__main__":

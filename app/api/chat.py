@@ -69,4 +69,6 @@ async def chat(
         "citations": result["citations"],
         "trace": result["trace"],
         "actions": result.get("actions", []),
+        # Internal structured memory changes are returned separately from answer text.
+        "memory_updates": result.get("memory_updates", []),
     }

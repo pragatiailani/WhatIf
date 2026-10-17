@@ -25,6 +25,7 @@ from langgraph.types import Checkpointer
 
 from app.agents.book_qa.explain import explain as explain_answer
 from app.agents.book_qa.prompt import SYSTEM_PROMPT
+from app.memory.service import build_memory_context, extract_and_update_memory
 from app.agents.registry import register_agent
 from app.agents.tools import CONNECT_INKITT, open_tools, tool_text
 from app.config import get_settings
@@ -67,12 +68,15 @@ FIRST_PHASE = "Reading your question…"
 MODEL_NODE = "model"  # create_agent's LLM node; other nodes (summarisation) never stream
 
 
-def build_agent(llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None):
-    """The ReAct agent around `llm` and already-bound `tools`."""
+def build_agent(
+    llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None,
+    system_prompt: str = SYSTEM_PROMPT,
+):
+    """The ReAct agent around `llm`, tools, and per-request system context."""
     return create_agent(
         llm,
         tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         middleware=[
             SummarizationMiddleware(
                 model=llm,
@@ -255,12 +259,20 @@ async def stream(
     if checkpointer is ...:
         checkpointer = get_checkpointer()
 
+    memory_context = build_memory_context(session.user_id, book_id, session.storyline_id)
+    system_prompt = SYSTEM_PROMPT
+    if memory_context:
+        system_prompt += "\n\n" + memory_context + (
+            "\nApply preferences when relevant, but the current user request takes precedence. "
+            "Memories are not book evidence; verify book claims with the tools and cite passages."
+        )
+
     yield "phase", FIRST_PHASE
     question_msg = HumanMessage(content=question)
     turn: list[BaseMessage] = [question_msg]
     model = llm or get_chat_model()
     async with open_tools(book_id, session_id, session.user_id, session.storyline_id) as tools:
-        agent = build_agent(model, tools, checkpointer)
+        agent = build_agent(model, tools, checkpointer, system_prompt=system_prompt)
         async for mode, data in agent.astream(
             {"messages": [question_msg]},
             {"configurable": {"thread_id": session_id}},
@@ -303,6 +315,12 @@ async def stream(
     )  # fmt: skip
     if session.title is None:
         sessions.set_title(session_id, question[:TITLE_CHARS])
+
+    # Long-term memory is best-effort: an extraction failure must not fail the chat turn.
+    memory_updates = await extract_and_update_memory(
+        model, user_id=session.user_id, session_id=session_id, book_id=book_id,
+        storyline_id=session.storyline_id, question=question, answer=answer,
+    )
     yield "done", {
         "answer": answer,
         "citations": citations,
@@ -310,6 +328,8 @@ async def stream(
         "graph_refs": refs,
         "reasoning": reasoning,
         "actions": actions,
+        # Structured memory delta is separate from the user-facing answer.
+        "memory_updates": memory_updates,
         "user_message": user_msg,
         "assistant_message": assistant_msg,
     }

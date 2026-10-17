@@ -297,3 +297,30 @@ FalkorDB Browser runs at http://localhost:3000. Connect with host `localhost`, p
 | `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
 | `MCP_SERVER_URL` | Streamable-HTTP URL of the tool server; empty runs it over stdio for each question | empty |
 | `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |
+## Cross-session user memory
+
+Signed-in users can retain explicit preferences and useful context across chat sessions. Memories
+are stored in MongoDB's `user_memories` collection and loaded into the book Q&A prompt before each
+turn. After the normal answer is generated, the LLM is called with a structured output schema to
+return a separate memory delta (`add`, `reinforce`, `replace`, or `forget`). The backend validates
+that delta and applies it best-effort; memory extraction failures do not fail the chat response.
+The chat response returns `memory_updates` separately from `answer`. Anonymous sessions do not
+persist user memories.
+
+Both explicit signals and behavioral patterns are supported. Explicit preferences become active
+immediately. Inferred preferences are stored as pending and only become active after repeated
+supporting evidence (at least two observations and confidence of at least 0.75). Pending memories
+are never injected into the answer prompt. Memories can be global, book-scoped, or storyline-scoped.
+
+Authenticated endpoints (send the normal `Authorization: Bearer <token>` header):
+
+- `GET /me/memories` — list active memories.
+- `PUT /me/memories/{memory_id}` with `{"key":"answer_style","value":"concise answers"}` — correct a memory.
+- `DELETE /me/memories/{memory_id}` — delete one memory.
+- `DELETE /me/memories` — delete all active and pending memories.
+
+`POST /sessions/{session_id}/chat` returns `memory_updates` as a separate metadata array, alongside
+`answer`, `citations`, `trace`, and `actions`. Memory values are not concatenated into the answer.
+Memories are personalization hints, not evidence about book content; book claims must still be
+grounded in the existing retrieval tools and citations.
+

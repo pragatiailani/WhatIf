@@ -12,6 +12,7 @@ from app.repo import (
     graph_levels,
     inkitt_stories,
     mentions,
+    memories,
     sessions,
     users,
     vectors,
@@ -21,7 +22,7 @@ from app.repo.graph import GraphScope
 
 def ensure_indexes() -> None:
     """Create Mongo indexes. Falkor indexes are per book: `graph.ensure_indexes(book_id)`."""
-    modules = (books, chunks, communities, users, graph_levels, inkitt_stories, mentions, sessions,
+    modules = (books, chunks, communities, users, graph_levels, inkitt_stories, mentions, memories, sessions,
                vectors)  # fmt: skip
     for module in modules:
         module.ensure_indexes()
@@ -38,6 +39,7 @@ __all__ = [
     "graph_levels",
     "inkitt_stories",
     "mentions",
+    "memories",
     "sessions",
     "users",
     "vectors",
