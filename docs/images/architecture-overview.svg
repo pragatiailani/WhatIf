@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" width="1200" height="620" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>WhatIf? high-level architecture</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1020"/>
+      <stop offset="1" stop-color="#171132"/>
+    </linearGradient>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a78bfa"/>
+    </marker>
+    <style>
+      .card { fill:#171b36; stroke-width:2; }
+      .t { fill:#ffffff; font-size:19px; font-weight:700; }
+      .s { fill:#b4bbe0; font-size:14px; }
+      .ln { stroke:#a78bfa; stroke-width:2.2; fill:none; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="620" rx="22" fill="url(#bg)"/>
+  <text x="40" y="52" fill="#ffffff" font-size="28" font-weight="800">How WhatIf? fits together</text>
+  <text x="40" y="80" class="s" font-size="15">Build the graph once. Then every question and every rewrite goes through one agent and one safe data layer.</text>
+  <rect x="40" y="92" width="120" height="4" rx="2" fill="url(#hdr)"/>
+
+  <!-- Clients -->
+  <rect x="40" y="260" width="190" height="130" rx="16" class="card" style="stroke:#8b5cf6"/>
+  <text x="62" y="296" class="t">Readers</text>
+  <text x="62" y="324" class="s">Web app</text>
+  <text x="62" y="346" class="s">Terminal chat</text>
+
+  <!-- API -->
+  <rect x="280" y="260" width="190" height="130" rx="16" class="card" style="stroke:#8b5cf6"/>
+  <text x="302" y="296" class="t">FastAPI</text>
+  <text x="302" y="324" class="s">Sign-in &#183; uploads</text>
+  <text x="302" y="346" class="s">Chat &#183; storylines</text>
+
+  <path d="M230 325 H280" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Ingestion -->
+  <rect x="520" y="130" width="290" height="116" rx="16" class="card" style="stroke:#f59e0b"/>
+  <text x="542" y="166" class="t">Ingestion pipeline</text>
+  <text x="542" y="194" class="s">PDF in, knowledge graph out</text>
+  <text x="542" y="216" class="s" fill="#f59e0b">Runs once per book</text>
+
+  <!-- LLM -->
+  <rect x="520" y="272" width="290" height="68" rx="16" class="card" style="stroke:#22d3ee"/>
+  <text x="542" y="302" class="t" font-size="17">Azure OpenAI</text>
+  <text x="542" y="324" class="s" font-size="13">Chat model + embeddings</text>
+  <path d="M665 272 V246" class="ln" marker-end="url(#arr)"/>
+  <path d="M665 340 V364" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Agent -->
+  <rect x="520" y="366" width="290" height="116" rx="16" class="card" style="stroke:#34d399"/>
+  <text x="542" y="402" class="t">Story agent</text>
+  <text x="542" y="430" class="s">Answers questions</text>
+  <text x="542" y="452" class="s">Rewrites the plot</text>
+
+  <!-- API -> core -->
+  <path d="M470 325 H495 V188 H520" class="ln" marker-end="url(#arr)"/>
+  <path d="M470 325 H495 V424 H520" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Repo -->
+  <rect x="880" y="260" width="280" height="130" rx="16" class="card" style="stroke:url(#hdr)"/>
+  <text x="902" y="296" class="t">Repository layer</text>
+  <text x="902" y="324" class="s">The only door to the data.</text>
+  <text x="902" y="346" class="s">Shows each reader only</text>
+  <text x="902" y="366" class="s">their own storyline.</text>
+
+  <path d="M810 188 H845 V325 H880" class="ln" marker-end="url(#arr)"/>
+  <path d="M810 424 H845 V325" class="ln"/>
+
+  <!-- Stores -->
+  <rect x="880" y="120" width="280" height="96" rx="16" class="card" style="stroke:#f472b6"/>
+  <text x="902" y="156" class="t">FalkorDB</text>
+  <text x="902" y="184" class="s">The story graph</text>
+  <path d="M1020 260 V216" class="ln" marker-end="url(#arr)"/>
+
+  <rect x="880" y="434" width="280" height="96" rx="16" class="card" style="stroke:#34d399"/>
+  <text x="902" y="470" class="t">MongoDB</text>
+  <text x="902" y="498" class="s">Text, edits, chats, users</text>
+  <path d="M1020 390 V434" class="ln" marker-end="url(#arr)"/>
+
+  <text x="40" y="580" class="s" font-size="14" fill="#8a93c9">Edits are stored as a branch on top of the original book, so the original is never changed.</text>
+</svg>

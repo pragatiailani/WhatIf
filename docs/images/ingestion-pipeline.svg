@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>WhatIf? ingestion pipeline</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1020"/>
+      <stop offset="1" stop-color="#171132"/>
+    </linearGradient>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a78bfa"/>
+    </marker>
+    <style>
+      .card { fill:#171b36; stroke-width:2; }
+      .panel { fill:#12162e; stroke:#252b57; stroke-width:1.4; }
+      .t { fill:#ffffff; font-size:19px; font-weight:700; }
+      .s { fill:#b4bbe0; font-size:14px; }
+      .st { font-size:13px; font-weight:600; }
+      .ln { stroke:#a78bfa; stroke-width:2.2; fill:none; }
+      .tree { stroke:#4a5390; stroke-width:2; fill:none; }
+      .num { fill:#0d1020; font-size:15px; font-weight:800; }
+      .nd { fill:#1d2347; stroke-width:2; }
+      .nt { fill:#e6e9ff; font-size:13px; font-weight:700; text-anchor:middle; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="800" rx="22" fill="url(#bg)"/>
+  <text x="40" y="52" fill="#ffffff" font-size="28" font-weight="800">Ingestion: from PDF to knowledge graph</text>
+  <text x="40" y="80" class="s" font-size="15">Runs once per book. Every step saves its progress, so a crash resumes instead of starting over.</text>
+  <rect x="40" y="92" width="120" height="4" rx="2" fill="url(#hdr)"/>
+
+  <!-- Row 1 -->
+  <rect x="40" y="124" width="340" height="130" rx="16" class="card" style="stroke:#8b5cf6"/>
+  <circle cx="70" cy="154" r="15" fill="#8b5cf6"/><text x="70" y="160" class="num" text-anchor="middle">1</text>
+  <text x="96" y="160" class="t">Parse &amp; chunk</text>
+  <text x="62" y="192" class="s">Read the PDF, find chapters,</text>
+  <text x="62" y="212" class="s">split it into one chunk per page.</text>
+  <text x="62" y="238" class="st" fill="#8b5cf6">saved in MongoDB</text>
+
+  <rect x="430" y="124" width="340" height="130" rx="16" class="card" style="stroke:#f59e0b"/>
+  <circle cx="460" cy="154" r="15" fill="#f59e0b"/><text x="460" y="160" class="num" text-anchor="middle">2</text>
+  <text x="486" y="160" class="t">Extract with the LLM</text>
+  <text x="452" y="192" class="s">Each page yields characters, places,</text>
+  <text x="452" y="212" class="s">events and relations, plus a quote.</text>
+  <text x="452" y="238" class="st" fill="#f59e0b">pages run in parallel</text>
+
+  <rect x="820" y="124" width="340" height="130" rx="16" class="card" style="stroke:#f59e0b"/>
+  <circle cx="850" cy="154" r="15" fill="#f59e0b"/><text x="850" y="160" class="num" text-anchor="middle">3</text>
+  <text x="876" y="160" class="t">Ground in the text</text>
+  <text x="842" y="192" class="s">Match each quote back to the page</text>
+  <text x="842" y="212" class="s">it came from. This is what citations use.</text>
+  <text x="842" y="238" class="st" fill="#f59e0b">LLM page numbers never trusted</text>
+
+  <path d="M380 189 H430" class="ln" marker-end="url(#arr)"/>
+  <path d="M770 189 H820" class="ln" marker-end="url(#arr)"/>
+  <path d="M990 254 V284 H210 V314" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Row 2 -->
+  <rect x="40" y="318" width="340" height="130" rx="16" class="card" style="stroke:#22d3ee"/>
+  <circle cx="70" cy="348" r="15" fill="#22d3ee"/><text x="70" y="354" class="num" text-anchor="middle">4</text>
+  <text x="96" y="354" class="t">Merge into one graph</text>
+  <text x="62" y="386" class="s">Page graphs are combined and the</text>
+  <text x="62" y="406" class="s">same person is recognised everywhere.</text>
+  <text x="62" y="432" class="st" fill="#22d3ee">see the tree below</text>
+
+  <rect x="430" y="318" width="340" height="130" rx="16" class="card" style="stroke:#f472b6"/>
+  <circle cx="460" cy="348" r="15" fill="#f472b6"/><text x="460" y="354" class="num" text-anchor="middle">5</text>
+  <text x="486" y="354" class="t">Publish the graph</text>
+  <text x="452" y="386" class="s">Write the final graph to FalkorDB.</text>
+  <text x="452" y="406" class="s">This becomes the book's canon.</text>
+  <text x="452" y="432" class="st" fill="#f472b6">one graph per book</text>
+
+  <rect x="820" y="318" width="340" height="130" rx="16" class="card" style="stroke:#34d399"/>
+  <circle cx="850" cy="348" r="15" fill="#34d399"/><text x="850" y="354" class="num" text-anchor="middle">6</text>
+  <text x="876" y="354" class="t">Summarise &amp; index</text>
+  <text x="842" y="386" class="s">Group characters into communities,</text>
+  <text x="842" y="406" class="s">summarise them, add search vectors.</text>
+  <text x="842" y="432" class="st" fill="#34d399">then the book is ready</text>
+
+  <path d="M380 383 H430" class="ln" marker-end="url(#arr)"/>
+  <path d="M770 383 H820" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Merge tree -->
+  <rect x="40" y="488" width="1120" height="276" rx="16" class="panel"/>
+  <text x="62" y="524" class="t">Step 4 up close: the merge tree</text>
+  <text x="62" y="548" class="s">Neighbouring pages merge first, then bigger and bigger groups, until one graph covers the book.</text>
+
+  <g class="tree">
+    <path d="M110 700 L150 668 M190 700 L150 668"/>
+    <path d="M270 700 L310 668 M350 700 L310 668"/>
+    <path d="M150 656 L230 616 M310 656 L230 616"/>
+    <path d="M430 700 L470 668 M510 700 L470 668"/>
+    <path d="M590 700 L630 668 M670 700 L630 668"/>
+    <path d="M470 656 L550 616 M630 656 L550 616"/>
+    <path d="M230 604 L390 580 M550 604 L390 580"/>
+  </g>
+  <g>
+    <rect x="90" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="110" y="718" class="nt">P1</text>
+    <rect x="170" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="190" y="718" class="nt">P2</text>
+    <rect x="250" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="270" y="718" class="nt">P3</text>
+    <rect x="330" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="350" y="718" class="nt">P4</text>
+    <rect x="410" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="430" y="718" class="nt">P5</text>
+    <rect x="490" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="510" y="718" class="nt">P6</text>
+    <rect x="570" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="590" y="718" class="nt">P7</text>
+    <rect x="650" y="700" width="40" height="26" rx="8" class="nd" style="stroke:#f59e0b"/><text x="670" y="718" class="nt">P8</text>
+
+    <rect x="130" y="642" width="40" height="26" rx="8" class="nd" style="stroke:#22d3ee"/>
+    <rect x="290" y="642" width="40" height="26" rx="8" class="nd" style="stroke:#22d3ee"/>
+    <rect x="450" y="642" width="40" height="26" rx="8" class="nd" style="stroke:#22d3ee"/>
+    <rect x="610" y="642" width="40" height="26" rx="8" class="nd" style="stroke:#22d3ee"/>
+
+    <rect x="208" y="590" width="44" height="26" rx="8" class="nd" style="stroke:#8b5cf6"/>
+    <rect x="528" y="590" width="44" height="26" rx="8" class="nd" style="stroke:#8b5cf6"/>
+
+    <rect x="354" y="560" width="72" height="30" rx="10" class="nd" style="stroke:#f472b6;stroke-width:2.6"/>
+    <text x="390" y="580" class="nt">Book</text>
+  </g>
+  <text x="90" y="750" class="s" font-size="12">P = one page graph</text>
+
+  <g>
+    <circle cx="772" cy="610" r="12" fill="#34d399"/><text x="772" y="615" class="num" text-anchor="middle" font-size="13">1</text>
+    <text x="796" y="615" class="s" fill="#e6e9ff">Obvious matches are merged by code.</text>
+    <circle cx="772" cy="656" r="12" fill="#f59e0b"/><text x="772" y="661" class="num" text-anchor="middle" font-size="13">2</text>
+    <text x="796" y="661" class="s" fill="#e6e9ff">Only unclear pairs are sent to the LLM,</text>
+    <text x="796" y="681" class="s" fill="#e6e9ff">in one batch. None unclear, no LLM call.</text>
+    <circle cx="772" cy="720" r="12" fill="#22d3ee"/><text x="772" y="725" class="num" text-anchor="middle" font-size="13">3</text>
+    <text x="796" y="725" class="s" fill="#e6e9ff">Every merged node is saved as a checkpoint.</text>
+  </g>
+</svg>

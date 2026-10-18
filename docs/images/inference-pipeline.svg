@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>WhatIf? inference pipeline</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1020"/>
+      <stop offset="1" stop-color="#171132"/>
+    </linearGradient>
+    <linearGradient id="hdr" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#a78bfa"/>
+    </marker>
+    <style>
+      .card { fill:#171b36; stroke-width:2; }
+      .panel { fill:#12162e; stroke:#252b57; stroke-width:1.4; }
+      .t { fill:#ffffff; font-size:19px; font-weight:700; }
+      .s { fill:#b4bbe0; font-size:14px; }
+      .st { font-size:13px; font-weight:600; }
+      .ln { stroke:#a78bfa; stroke-width:2.2; fill:none; }
+      .num { fill:#0d1020; font-size:15px; font-weight:800; }
+      .mono { font-family: Consolas, 'Courier New', monospace; font-size:13px; fill:#d7dcff; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" rx="22" fill="url(#bg)"/>
+  <text x="40" y="52" fill="#ffffff" font-size="28" font-weight="800">Inference: answering and rewriting</text>
+  <text x="40" y="80" class="s" font-size="15">One agent handles every message. It decides on its own whether to look something up or to change the story.</text>
+  <rect x="40" y="92" width="120" height="4" rx="2" fill="url(#hdr)"/>
+
+  <!-- Top flow -->
+  <rect x="40" y="124" width="250" height="110" rx="16" class="card" style="stroke:#8b5cf6"/>
+  <text x="62" y="160" class="t">Your message</text>
+  <text x="62" y="188" class="s">Sent to the chat API</text>
+  <text x="62" y="208" class="s">with your sign-in.</text>
+
+  <rect x="340" y="124" width="250" height="110" rx="16" class="card" style="stroke:#8b5cf6"/>
+  <text x="362" y="160" class="t">Prepare</text>
+  <text x="362" y="188" class="s">Load your storyline,</text>
+  <text x="362" y="208" class="s">memories and chat history.</text>
+
+  <rect x="640" y="124" width="250" height="110" rx="16" class="card" style="stroke:#34d399"/>
+  <text x="662" y="160" class="t">Story agent</text>
+  <text x="662" y="188" class="s">LLM that thinks, calls a</text>
+  <text x="662" y="208" class="s">tool, reads, repeats.</text>
+
+  <rect x="940" y="124" width="220" height="110" rx="16" class="card" style="stroke:#f472b6"/>
+  <text x="962" y="160" class="t">Reply</text>
+  <text x="962" y="188" class="s">Streamed live: answer,</text>
+  <text x="962" y="208" class="s">citations, why it holds.</text>
+
+  <path d="M290 179 H340" class="ln" marker-end="url(#arr)"/>
+  <path d="M590 179 H640" class="ln" marker-end="url(#arr)"/>
+  <path d="M890 179 H940" class="ln" marker-end="url(#arr)"/>
+
+  <!-- Agent splits -->
+  <path d="M765 234 V268 H300 V296" class="ln" marker-end="url(#arr)"/>
+  <path d="M765 234 V268 H890 V296" class="ln" marker-end="url(#arr)"/>
+  <text x="330" y="262" class="st" fill="#22d3ee">asked a question</text>
+  <text x="920" y="262" class="st" fill="#f472b6">asked for a change</text>
+
+  <!-- Look up panel -->
+  <rect x="40" y="300" width="520" height="380" rx="16" class="panel" style="stroke:#22d3ee"/>
+  <text x="62" y="334" class="t">Look something up</text>
+
+  <rect x="62" y="352" width="226" height="64" rx="12" class="card" style="stroke:#22d3ee"/>
+  <text x="80" y="378" class="t" font-size="16">Graph tools</text>
+  <text x="80" y="400" class="s" font-size="13">characters, links, paths</text>
+  <rect x="312" y="352" width="226" height="64" rx="12" class="card" style="stroke:#34d399"/>
+  <text x="330" y="378" class="t" font-size="16">Text tools</text>
+  <text x="330" y="400" class="s" font-size="13">passages, chapters, pages</text>
+
+  <path d="M175 416 V450 H300 V468" class="ln"/>
+  <path d="M425 416 V450 H300 V468" class="ln" marker-end="url(#arr)"/>
+
+  <rect x="62" y="472" width="476" height="86" rx="12" class="card" style="stroke:url(#hdr)"/>
+  <text x="80" y="500" class="t" font-size="16">Repository layer</text>
+  <text x="80" y="522" class="s" font-size="13">Only returns what this reader may see:</text>
+  <text x="80" y="544" class="mono">(sid IS NULL OR sid = $sid) AND NOT hidden</text>
+
+  <path d="M300 558 V584" class="ln" marker-end="url(#arr)"/>
+  <rect x="62" y="588" width="476" height="70" rx="12" class="card" style="stroke:#f472b6"/>
+  <text x="80" y="616" class="t" font-size="16">FalkorDB + MongoDB</text>
+  <text x="80" y="638" class="s" font-size="13">The graph, and the original text with page numbers</text>
+
+  <!-- Change panel -->
+  <rect x="620" y="300" width="540" height="380" rx="16" class="panel" style="stroke:#f472b6"/>
+  <text x="642" y="334" class="t">Change the story</text>
+
+  <circle cx="660" cy="378" r="15" fill="#f472b6"/><text x="660" y="384" class="num" text-anchor="middle">1</text>
+  <text x="690" y="378" class="t" font-size="17">Start a draft</text>
+  <text x="690" y="400" class="s">Pick where the story diverges and list every</text>
+  <text x="690" y="418" class="s">later event the change could affect.</text>
+
+  <circle cx="660" cy="458" r="15" fill="#f472b6"/><text x="660" y="464" class="num" text-anchor="middle">2</text>
+  <text x="690" y="458" class="t" font-size="17">Settle each event</text>
+  <text x="690" y="480" class="s">Keep it, hide it, or rewrite it. A rewrite can</text>
+  <text x="690" y="498" class="s">pull more characters into the list.</text>
+
+  <circle cx="660" cy="538" r="15" fill="#f59e0b"/><text x="660" y="544" class="num" text-anchor="middle">3</text>
+  <text x="690" y="538" class="t" font-size="17">Verify</text>
+  <text x="690" y="560" class="s">Checks that nobody acts after dying and the</text>
+  <text x="690" y="578" class="s">story still holds together, chapter by chapter.</text>
+
+  <circle cx="660" cy="618" r="15" fill="#34d399"/><text x="660" y="624" class="num" text-anchor="middle">4</text>
+  <text x="690" y="618" class="t" font-size="17">Commit</text>
+  <text x="690" y="640" class="s">Only allowed after a passing check and your</text>
+  <text x="690" y="658" class="s">approval. Touched chapters get new text.</text>
+
+</svg>
