@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import repo
-from app.api import auth, books, chat, reading
+from app.api import auth, books, chat, memories, reading
 from app.constants import DEFAULT_CORS_ORIGINS
 from app.api.middleware import REQUEST_ID_HEADER, RequestLogMiddleware
 from app.logging_config import setup_logging
@@ -87,7 +87,7 @@ app.include_router(auth.router)
 app.include_router(books.router)
 app.include_router(reading.router)
 app.include_router(reading.storylines_router)
-
+app.include_router(memories.router)
 
 if __name__ == "__main__":
     import uvicorn
