@@ -335,6 +335,6 @@ def test_signed_in_session_is_private(client, monkeypatch):
     assert sessions.get_session(sid).user_id == owner.id
 
     ask = {"question": "Publish to Inkitt"}
-    assert client.post(f"/sessions/{sid}/chat", json=ask).status_code == 403
+    assert client.post(f"/sessions/{sid}/chat", json=ask).status_code == 401
     assert client.post(f"/sessions/{sid}/chat", json=ask, headers=_headers(other)).status_code == 403
     assert client.post(f"/sessions/{sid}/chat", json=ask, headers=_headers(owner)).status_code == 200

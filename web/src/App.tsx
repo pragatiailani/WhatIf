@@ -31,9 +31,9 @@ export default function App() {
               <Route path="/" element={<Landing />} />
               <Route path="/signin" element={<AuthPage mode="signin" />} />
               <Route path="/signup" element={<AuthPage mode="signup" />} />
-              <Route path="/library" element={<Library />} />
-              <Route path="/books/:bookId" element={<BookPage />} />
-              <Route path="/explore" element={<Explore />} />
+              <Route path="/library" element={<RequireAuth><Library /></RequireAuth>} />
+              <Route path="/books/:bookId" element={<RequireAuth><BookPage /></RequireAuth>} />
+              <Route path="/explore" element={<RequireAuth><Explore /></RequireAuth>} />
               <Route path="/upload" element={<RequireAuth><Upload /></RequireAuth>} />
               <Route path="/shelf" element={<RequireAuth><Shelf /></RequireAuth>} />
               <Route path="/read/:bookId/:storylineId?" element={<RequireAuth><Workspace /></RequireAuth>} />

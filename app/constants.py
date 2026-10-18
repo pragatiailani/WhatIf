@@ -9,12 +9,22 @@ MENTIONS_COLLECTION = "mentions"
 GRAPH_LEVELS_COLLECTION = "graph_levels"
 INKITT_STORIES_COLLECTION = "inkitt_stories"
 VECTORS_COLLECTION = "vectors"
+REFRESH_TOKENS_COLLECTION = "refresh_tokens"
 
 # --- Auth ----------------------------------------------------------------
 
-# How long a sign-in token stays valid.
-AUTH_TOKEN_TTL_SECONDS = 7 * 24 * 3600
+# The access token is a short-lived JWT sent on every request. The refresh token is an opaque
+# random string in an httpOnly cookie, used only to get a new access token.
+ACCESS_TOKEN_TTL_SECONDS = 15 * 60
+REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600
+JWT_ALGORITHM = "HS256"
+JWT_ISSUER = "whatif"
+REFRESH_COOKIE = "whatif_refresh"
+REFRESH_COOKIE_PATH = "/auth"
 MIN_PASSWORD_LENGTH = 8
+# Browser origins that may call the API with cookies; add more with CORS_ORIGINS. Cookies need
+# explicit origins, never "*".
+DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 
 # --- LLM -----------------------------------------------------------------
 

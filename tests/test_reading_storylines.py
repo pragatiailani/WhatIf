@@ -58,7 +58,7 @@ def sse(res):
 
 def test_canon_graph_and_a_storyline_graph_that_lists_what_it_hid(api):
     _, h = person()
-    canon = api.client.get(f"/books/{api.book}/graph").json()
+    canon = api.client.get(f"/books/{api.book}/graph", headers=h).json()
     assert {e["key"] for e in canon["entities"]} == {RAVI, "asha|character", VIK}
     assert canon["events"][1]["involves"] == [VIK, RAVI] and canon["hidden"] == []
 
@@ -73,7 +73,7 @@ def test_canon_graph_and_a_storyline_graph_that_lists_what_it_hid(api):
     assert {"e2", "r1"} <= set(g["hidden"])
     assert any(e["key"] == "e2" for e in g["events"])  # hidden items are listed, not removed
     assert any(e["sid"] == sl["id"] and e["summary"] == "Vik wounds Ravi" for e in g["events"])
-    assert api.client.get(f"/books/{api.book}/graph").json()["hidden"] == []  # canon is untouched
+    assert api.client.get(f"/books/{api.book}/graph", headers=h).json()["hidden"] == []  # canon is untouched
 
     other, other_h = person("asha@example.com")
     assert api.client.get(f"/books/{api.book}/graph?storyline_id={sl['id']}", headers=other_h).status_code == 404
@@ -93,12 +93,12 @@ def test_storyline_lifecycle_visibility_and_unbuilt_features(api):
 
     assert api.client.get(f"/storylines/{sl['id']}", headers=owner_h).status_code == 200
     assert api.client.get(f"/storylines/{sl['id']}", headers=other_h).status_code == 404  # private
-    assert api.client.get("/storylines?scope=public").json() == []
+    assert api.client.get("/storylines?scope=public", headers=owner_h).json() == []
 
     patched = api.client.patch(f"/storylines/{sl['id']}", json={"title": "Ravi survives", "visibility": "public"}, headers=owner_h).json()
     assert (patched["title"], patched["visibility"]) == ("Ravi survives", "public")
     assert api.client.patch(f"/storylines/{sl['id']}", json={"title": "x"}, headers=other_h).status_code == 403
-    assert [s["id"] for s in api.client.get("/storylines?scope=public").json()] == [sl["id"]]
+    assert [s["id"] for s in api.client.get("/storylines?scope=public", headers=other_h).json()] == [sl["id"]]
     assert [s["id"] for s in api.client.get(f"/books/{api.book}/storylines", headers=other_h).json()] == [sl["id"]]
     assert [s["id"] for s in api.client.get("/storylines?scope=mine", headers=owner_h).json()] == [sl["id"]]
     assert api.client.get("/storylines?scope=mine").status_code == 401

@@ -22,14 +22,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agents import book_qa
-from app.api.auth import current_user, optional_user
+from app.api.auth import current_user
 from app.logging_config import fields
 from app.repo import GraphScope, books, communities, graph, sessions, storylines, users
 from app.repo.models import Book, Message, Storyline, User
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/books", tags=["reading"])
-storylines_router = APIRouter(prefix="/storylines", tags=["reading"])
+router = APIRouter(prefix="/books", tags=["reading"], dependencies=[Depends(current_user)])
+storylines_router = APIRouter(
+    prefix="/storylines", tags=["reading"], dependencies=[Depends(current_user)]
+)
 
 HISTORY_LIMIT = 200
 ANSWER_FAILED = "Something went wrong while answering. Please try again."
@@ -50,12 +52,11 @@ class StorylinePatch(BaseModel):
     visibility: Literal["public", "private"] | None = None
 
 
-def _readable(book_id: str, user: User | None) -> Book:
+def _readable(book_id: str, user: User) -> Book:
     """The book if `user` may read it (public, theirs, or shared with them); 404 otherwise."""
     book = books.get_book(book_id)
     allowed = book is not None and (
-        book.visibility == "public"
-        or (user is not None and (book.owner_id == user.id or user.id in book.shared_with))
+        book.visibility == "public" or book.owner_id == user.id or user.id in book.shared_with
     )
     if not allowed:
         raise HTTPException(404, "book not found")
@@ -67,11 +68,11 @@ def _ready(book: Book) -> None:
         raise HTTPException(409, "This book is still being read. Try again when it is ready.")
 
 
-def _storyline(storyline_id: str, user: User | None, *, write: bool = False) -> Storyline:
+def _storyline(storyline_id: str, user: User, *, write: bool = False) -> Storyline:
     """The storyline if `user` may see it (theirs, or made public); 404 otherwise. With `write`,
     only its owner may use it: anyone else is told to fork it."""
     sl = storylines.get_storyline(storyline_id)
-    mine = sl is not None and user is not None and sl.owner_id == user.id
+    mine = sl is not None and sl.owner_id == user.id
     if sl is None or not (mine or sl.visibility == "public"):
         raise HTTPException(404, "storyline not found")
     if write and not mine:
@@ -79,7 +80,7 @@ def _storyline(storyline_id: str, user: User | None, *, write: bool = False) -> 
     return sl
 
 
-def _of_book(book_id: str, user: User | None, storyline_id: str | None) -> Storyline | None:
+def _of_book(book_id: str, user: User, storyline_id: str | None) -> Storyline | None:
     """The requested storyline, which must belong to this book. None for canon."""
     if not storyline_id:
         return None
@@ -150,7 +151,7 @@ def graph_out(book_id: str, sl: Storyline | None) -> dict[str, Any]:
 @router.get("/{book_id}/graph")
 def get_graph(
     book_id: str,
-    user: Annotated[User | None, Depends(optional_user)],
+    user: Annotated[User, Depends(current_user)],
     storyline_id: str | None = None,
 ) -> dict[str, Any]:
     book = _readable(book_id, user)
@@ -161,13 +162,12 @@ def get_graph(
 
 @router.get("/{book_id}/storylines")
 def list_storylines(
-    book_id: str, user: Annotated[User | None, Depends(optional_user)]
+    book_id: str, user: Annotated[User, Depends(current_user)]
 ) -> list[dict[str, Any]]:
     """The reader's own storylines on this book plus other people's public ones."""
     _readable(book_id, user)
     found = {s.id: s for s in storylines.list_public(book_id)}
-    if user:
-        found.update({s.id: s for s in storylines.list_for_user(user.id, book_id)})
+    found.update({s.id: s for s in storylines.list_for_user(user.id, book_id)})
     return [storyline_out(s) for s in sorted(found.values(), key=lambda s: s.updated_at, reverse=True)]
 
 
@@ -187,19 +187,17 @@ def create_storyline(
 
 @storylines_router.get("")
 def list_all_storylines(
-    user: Annotated[User | None, Depends(optional_user)],
+    user: Annotated[User, Depends(current_user)],
     scope: Literal["public", "mine"] = "public",
 ) -> list[dict[str, Any]]:
     if scope == "mine":
-        if user is None:
-            raise HTTPException(401, "sign in required")
         return [storyline_out(s) for s in storylines.list_for_user(user.id)]
     return [storyline_out(s) for s in storylines.list_public()]
 
 
 @storylines_router.get("/{storyline_id}")
 def get_storyline(
-    storyline_id: str, user: Annotated[User | None, Depends(optional_user)]
+    storyline_id: str, user: Annotated[User, Depends(current_user)]
 ) -> dict[str, Any]:
     return storyline_out(_storyline(storyline_id, user))
 
@@ -218,7 +216,7 @@ def update_storyline(
 
 @storylines_router.get("/{storyline_id}/checkpoints")
 def list_checkpoints(
-    storyline_id: str, user: Annotated[User | None, Depends(optional_user)]
+    storyline_id: str, user: Annotated[User, Depends(current_user)]
 ) -> list[dict[str, Any]]:
     _storyline(storyline_id, user)
     return []  # none can be saved yet
