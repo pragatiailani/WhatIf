@@ -189,6 +189,29 @@ async def test_stream_yields_phases_tokens_and_done(env):
     assert done["user_message"].content == "Why?"
 
 
+async def test_stream_ignores_messages_resent_by_middleware(env, monkeypatch):
+    from langchain_core.messages import ToolMessage
+
+    s = new_session()
+    old_call = call("get_timeline", {"entity": "Ravi"}, "old")
+    old_result = ToolMessage(content="{}", name="get_timeline", tool_call_id="old")
+    now_call = call("get_chunks", {"chunk_ids": ["c1"]}, "t1")
+    now_result = ToolMessage(content="{}", name="get_chunks", tool_call_id="t1")
+
+    class Agent:  # what create_agent streams when summarisation kicks in mid-turn
+        async def astream(self, *_, **__):
+            yield "updates", {"model": {"messages": [now_call]}}
+            yield "updates", {"tools": {"messages": [now_result]}}
+            yield "updates", {"SummarizationMiddleware.before_model":
+                              {"messages": [old_call, old_result, now_call, now_result]}}
+            yield "updates", {"model": {"messages": [AIMessage(content="Done.")]}}
+
+    monkeypatch.setattr(book_qa, "build_agent", lambda *_: Agent())
+    events = [e async for e in book_qa.stream("book1", s.id, "Why?", llm=fake(), checkpointer=None)]
+    assert [t["tool"] for t in events[-1][1]["trace"]] == ["get_chunks"]
+    assert [v["tool"] for k, v in events if k == "step"] == ["get_chunks"]
+
+
 def test_graph_refs_from_tool_results():
     from langchain_core.messages import ToolMessage
 

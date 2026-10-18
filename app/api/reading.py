@@ -1,15 +1,20 @@
 """The reading page's API: a book's graph, its storylines, and asking questions about it.
 
-Shapes follow the web app's contract (`web/src/api/types.ts`). Each signed-in user has one
-conversation per book, and one per storyline they own; asking streams Server-Sent Events: `phase`
+Shapes follow the web app's contract (`web/src/api/types.ts`). Each signed-in user can keep many
+chats on a book, and in each storyline they own; a question goes to the chat named by `chat_id`, a
+new one with `new_chat`, else their most recently active one. Asking streams Server-Sent Events: `phase`
 {label} while the agent works, `step` {label, detail, why, found} as each tool returns, `token`
 {text} as the answer is written, `reasoning` {chain, conclusion} (why the answer holds, when the
-graph backs it), then `done` with the saved turn, or `error` {detail}. A `phase` after tokens means
+graph backs it), then `done` with the saved turn and its `chat`, or `error` {detail}. A `phase` after tokens means
 those tokens were the model's reasoning (now in a step's `why`), not the answer.
 
 A reader's "what if" is an edit the agent makes with its storyline tools. The first one made in a
-canon chat creates a storyline and binds the chat to it, so `done` carries that `storyline`, and
-the `graph` after the edit and a `diff` of what changed. Not built yet, and answered with 501:
+canon chat creates a storyline and binds the chat to it, so `done` carries that `storyline`. An edit
+is drafted first: once the draft is verified, the latest answer carries a `proposal` (what would
+change, and the graph it would give) for the reader to accept or discuss. Others see only what
+was committed; the storyline's owner also sees their open draft as it is worked out, so every turn
+in a storyline carries the `graph` after it, and the turn that commits a `diff` of what changed.
+Not built yet, and answered with 501:
 forking, starring, and saving or restoring checkpoints.
 """
 
@@ -22,10 +27,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.agents import book_qa
+from app.storyline import draft
+from app.storyline.diff import proposal_diff
 from app.api.auth import current_user
 from app.logging_config import fields
 from app.repo import GraphScope, books, communities, graph, sessions, storylines, users
-from app.repo.models import Book, Message, Storyline, User
+from app.repo.models import Book, ChatSession, Message, Storyline, User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/books", tags=["reading"], dependencies=[Depends(current_user)])
@@ -40,6 +47,8 @@ ANSWER_FAILED = "Something went wrong while answering. Please try again."
 class Ask(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     storyline_id: str | None = None
+    chat_id: str | None = None  # the chat to continue
+    new_chat: bool = False  # start a new chat instead of continuing the latest one
 
 
 class NewStoryline(BaseModel):
@@ -107,7 +116,7 @@ def storyline_out(sl: Storyline) -> dict[str, Any]:
         "visibility": sl.visibility,
         "parent_storyline_id": None,
         "fork_op_seq": None,
-        "head_op_seq": sl.head_seq,
+        "head_op_seq": sl.committed_seq,
         "forks": 0,
         "stars": 0,
         "created_at": sl.created_at.isoformat(),
@@ -118,15 +127,16 @@ def storyline_out(sl: Storyline) -> dict[str, Any]:
 # --- graph and storylines -------------------------------------------------
 
 
-def graph_out(book_id: str, sl: Storyline | None) -> dict[str, Any]:
-    """The graph a reader sees: canon, or canon plus the storyline's changes. What the storyline
-    hid is still listed (in `hidden`), so the page can show it greyed out."""
+def graph_out(book_id: str, sl: Storyline | None, *, with_draft: bool = False) -> dict[str, Any]:
+    """The graph a reader sees: canon, or canon plus the storyline's committed changes (and its
+    open draft's, `with_draft`). What the storyline hid is still listed (in `hidden`), so the page
+    can show it greyed out."""
     hidden: list[str] = []
     if sl is None:
         scope = GraphScope.canon(book_id)
     else:
-        scope = GraphScope(book_id=book_id, sid=sl.id, max_op=sl.head_seq)  # hidden items included
-        ops = storylines.scope(sl)
+        ops = storylines.scope(sl, committed_only=not with_draft)
+        scope = GraphScope(book_id=book_id, sid=sl.id, max_op=ops.max_op)  # hidden items included
         hidden = sorted(ops.hidden_nodes | ops.hidden_edges)
     entities, events, relations = graph.book_graph(scope)
     return {
@@ -157,7 +167,7 @@ def get_graph(
     book = _readable(book_id, user)
     sl = _of_book(book_id, user, storyline_id)
     _ready(book)
-    return graph_out(book_id, sl)
+    return graph_out(book_id, sl, with_draft=sl is not None and sl.owner_id == user.id)
 
 
 @router.get("/{book_id}/storylines")
@@ -292,28 +302,82 @@ def message_out(m: Message, question: str = "") -> dict[str, Any]:
     return out
 
 
+def chat_out(s: ChatSession) -> dict[str, Any]:
+    """A chat session as the web app's ChatSummary."""
+    return {
+        "id": s.id,
+        "storyline_id": s.storyline_id,
+        "title": s.title,
+        "created_at": s.created_at.isoformat(),
+        "last_active": s.last_active.isoformat(),
+    }
+
+
+def _chats(book_id: str, user: User, storyline_id: str | None) -> list[ChatSession]:
+    """The user's chats on this book, in canon or one of their storylines, most recently active
+    first. Nobody else's storyline holds chats of theirs."""
+    _readable(book_id, user)
+    if storyline_id:
+        sl = storylines.get_storyline(storyline_id)
+        if sl is None or sl.book_id != book_id or sl.owner_id != user.id:
+            return []
+    return sessions.list_sessions(user.id, book_id, storyline_id or None)
+
+
+@router.get("/{book_id}/chats")
+def list_chats(
+    book_id: str,
+    user: Annotated[User, Depends(current_user)],
+    storyline_id: str | None = None,
+) -> list[dict[str, Any]]:
+    return [chat_out(s) for s in _chats(book_id, user, storyline_id)]
+
+
 @router.get("/{book_id}/messages")
 def get_messages(
     book_id: str,
     user: Annotated[User, Depends(current_user)],
     storyline_id: str | None = None,
+    chat_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The user's conversation on this book (or in one of their storylines), oldest first."""
-    _readable(book_id, user)
-    sl = None
-    if storyline_id:
-        mine = storylines.get_storyline(storyline_id)
-        if mine is None or mine.book_id != book_id or mine.owner_id != user.id:
-            return []  # nobody else's chat is theirs to read
-        sl = mine
-    session = sessions.find_book_chat(user.id, book_id, sl.id if sl else None)
-    if session is None:
+    """One of the user's chats on this book (or in one of their storylines), oldest first: the one
+    named by `chat_id`, else the most recently active."""
+    chats = _chats(book_id, user, storyline_id)
+    if chat_id:
+        session = next((c for c in chats if c.id == chat_id), None)
+        if session is None:
+            raise HTTPException(404, "chat not found")
+    elif not chats:
         return []
+    else:
+        session = chats[0]
     out, question = [], ""
     for m in sessions.last_messages(session.id, HISTORY_LIMIT):
         out.append(message_out(m, question))
         question = m.content if m.role == "user" else question
+    line = storylines.get_storyline(session.storyline_id) if session.storyline_id else None
+    _with_proposal(out, proposal_out(book_id, line))
     return out
+
+
+def proposal_out(book_id: str, sl: Storyline | None) -> dict[str, Any] | None:
+    """The storyline's verified draft, waiting for the reader to accept or discuss it: what it
+    would change and the graph it would give. None when nothing is waiting."""
+    if sl is None or not draft.awaiting_approval(sl):
+        return None
+    return {
+        "storyline_id": sl.id,
+        "premise": sl.draft.premise,
+        "diff": proposal_diff(sl),
+        "graph": graph_out(book_id, sl, with_draft=True),
+    }
+
+
+def _with_proposal(messages: list[dict[str, Any]], proposal: dict[str, Any] | None) -> None:
+    """Put the waiting proposal on the latest answer, where the reader accepts or discusses it."""
+    last = next((m for m in reversed(messages) if m["role"] == "assistant"), None)
+    if proposal and last:
+        last["proposal"] = proposal
 
 
 def _sse(event: str, data: Any) -> str:
@@ -332,7 +396,7 @@ async def ask(
         if sl.book_id != book_id:
             raise HTTPException(404, "storyline not found")
     _ready(book)
-    session = sessions.book_chat(user.id, book_id, sl.id if sl else None)
+    session = _chat_for(body, user, book_id, sl.id if sl else None)
 
     async def events():
         try:
@@ -346,7 +410,7 @@ async def ask(
                 elif kind == "token":
                     yield _sse("token", {"text": value})
                 else:
-                    yield _sse("done", _turn(book_id, body.text, value))
+                    yield _sse("done", _turn(book_id, session.id, body.text, value))
         except Exception:
             log.exception("answering on book %s failed", book_id)
             yield _sse("error", {"detail": ANSWER_FAILED})
@@ -358,17 +422,35 @@ async def ask(
     )
 
 
-def _turn(book_id: str, question: str, result: dict[str, Any]) -> dict[str, Any]:
-    """The `done` payload. An edit changes the storyline, so the graph after it is sent too; a
-    chat that just made its first edit is now bound to a new storyline, which is sent as well."""
+def _chat_for(body: Ask, user: User, book_id: str, storyline_id: str | None) -> ChatSession:
+    """The chat a question goes to: the one named, a new one, or the user's latest there."""
+    if body.chat_id:
+        s = sessions.get_session(body.chat_id)
+        if s is None or s.user_id != user.id or s.book_id != book_id or s.storyline_id != storyline_id:
+            raise HTTPException(404, "chat not found")
+        return s
+    latest = None if body.new_chat else sessions.find_session(user.id, book_id, storyline_id)
+    return latest or sessions.create_session(
+        ChatSession(user_id=user.id, book_id=book_id, storyline_id=storyline_id)
+    )
+
+
+def _turn(book_id: str, chat_id: str, question: str, result: dict[str, Any]) -> dict[str, Any]:
+    """The `done` payload. A turn in a storyline may have changed it, so the graph after it
+    (open draft included) is sent too; a chat that just made its first edit is now bound to a new
+    storyline, which is sent as well."""
     assistant = result["assistant_message"]
     line = storylines.get_storyline(result["storyline_id"]) if result.get("storyline_id") else None
+    chat = sessions.get_session(chat_id)  # reread: the turn may have titled it or bound a storyline
+    answer = message_out(assistant, question)
+    _with_proposal([answer], proposal_out(book_id, line))
     turn: dict[str, Any] = {
         "user": message_out(result["user_message"]),
-        "assistant": message_out(assistant, question),
+        "assistant": answer,
         "storyline": storyline_out(line) if line else None,
+        "chat": chat_out(chat) if chat else None,
         "actions": result["actions"],
     }
-    if line and assistant.diff:
-        turn["graph"] = graph_out(book_id, line)
+    if line:  # the asker owns the storyline, so their open draft shows as it grows
+        turn["graph"] = graph_out(book_id, line, with_draft=True)
     return turn

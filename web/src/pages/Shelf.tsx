@@ -19,6 +19,8 @@ export default function Shelf() {
   const [uploads, setUploads] = useState<Book[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
   const { progressOf } = useIngestion();
+  // Failed uploads are left off the shelf, including one that fails while it is open.
+  const shown = uploads.filter((b) => (progressOf(b.id)?.status ?? b.status) !== "failed");
 
   useEffect(() => {
     api.listMyStorylines().then(setLines);
@@ -39,7 +41,7 @@ export default function Shelf() {
           <p className="text-sm text-ink-mute">{user!.email}</p>
         </div>
         <dl className="flex gap-8 text-sm">
-          {[["storylines", lines?.length ?? 0], ["published", published], ["stars", stars], ["uploads", uploads.length]].map(([k, v]) => (
+          {[["storylines", lines?.length ?? 0], ["published", published], ["stars", stars], ["uploads", shown.length]].map(([k, v]) => (
             <div key={k}>
               <dt className="text-xs uppercase tracking-wider text-ink-mute">{k}</dt>
               <dd className="font-display text-3xl text-gold">{v}</dd>
@@ -61,21 +63,20 @@ export default function Shelf() {
         </div>
       )}
 
-      {uploads.length > 0 && (
+      {shown.length > 0 && (
         <>
           <div className="flourish mb-6 mt-16 font-display text-2xl">Your uploads</div>
           <div className="flex flex-wrap gap-6">
-            {uploads.map((b) => {
+            {shown.map((b) => {
               const live = progressOf(b.id);
               const status = live?.status ?? b.status;
-              const working = status !== "ready" && status !== "failed";
-              const hint = status === "failed" ? (live?.detail ?? b.error ?? undefined) : live?.detail;
+              const working = status !== "ready";
               return (
                 <motion.div key={b.id} whileHover={{ y: -4 }}>
                   <Link to={`/books/${b.id}`} className="block">
                     <BookCover book={b} size="sm" />
-                    <div className="mt-2 flex gap-1" title={hint}>
-                      <Badge tone={status === "ready" ? "sage" : status === "failed" ? "rose" : "amber"}>
+                    <div className="mt-2 flex gap-1" title={live?.detail}>
+                      <Badge tone={status === "ready" ? "sage" : "amber"}>
                         {status}
                         {working && live && live.progress > 0 && ` ${Math.round(live.progress * 100)}%`}
                       </Badge>

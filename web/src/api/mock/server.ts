@@ -3,19 +3,27 @@
 // materialized over canon, checkpoints are (name, op_seq), forks copy ops.
 
 import type { Api, ChatEvent } from "../client";
-import type {
-  Book,
-  BookStatus,
-  ChatTurn,
-  Checkpoint,
-  IngestionProgress,
-  Message,
-  StoryGraph,
-  Storyline,
-  User,
+import {
+  ACCEPT_PROPOSAL,
+  type Book,
+  type BookStatus,
+  type ChatSummary,
+  type ChatTurn,
+  type Checkpoint,
+  type IngestionProgress,
+  type Message,
+  type Proposal,
+  type StoryDiff,
+  type StoryGraph,
+  type Storyline,
+  type User,
 } from "../types";
 import { CATALOG, buildGraph, quotesOf } from "./catalog";
 import { answerGlobal, answerLocal, applyEdit, classify, extractFromText, materialize, type Op } from "./engine";
+
+type MockChat = ChatSummary & { user_id: string; book_id: string; messages: Message[] };
+/** An edit drafted but not yet accepted: its op is applied only on accept. */
+type Draft = { premise: string; op: Op; diff: StoryDiff; citations: Message["citations"] };
 
 interface Db {
   users: (User & { password: string })[];
@@ -25,7 +33,8 @@ interface Db {
   storylines: Storyline[];
   ops: Record<string, Op[]>; // storyline id -> op log
   checkpoints: Checkpoint[];
-  messages: Record<string, Message[]>; // `${userId}|${bookId}|${sid ?? "canon"}`
+  chats: MockChat[];
+  drafts: Record<string, Draft>; // storyline id -> the edit waiting for approval
   stars: Record<string, string[]>; // user id -> storyline ids
 }
 
@@ -41,7 +50,7 @@ let db: Db = load();
 function load(): Db {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return { chats: [], drafts: {}, ...JSON.parse(raw) }; // stores saved before these had none
   } catch {
     /* fall through to a fresh seed */
   }
@@ -57,7 +66,7 @@ function save() {
 }
 
 function seed(): Db {
-  const fresh: Db = { users: [], sessions: {}, books: [], uploadGraphs: {}, storylines: [], ops: {}, checkpoints: [], messages: {}, stars: {} };
+  const fresh: Db = { users: [], sessions: {}, books: [], uploadGraphs: {}, storylines: [], ops: {}, checkpoints: [], chats: [], drafts: {}, stars: {} };
   const created = "2026-09-01T10:00:00.000Z";
   for (const [key, entry] of Object.entries(CATALOG)) {
     const g = buildGraph(entry);
@@ -190,7 +199,18 @@ function graphOf(bookId: string, sid: string | null): StoryGraph {
 }
 
 const quotes = (bookId: string) => (CATALOG[bookId] ? quotesOf(CATALOG[bookId]) : {});
-const msgKey = (uid: string, bookId: string, sid: string | null) => `${uid}|${bookId}|${sid ?? "canon"}`;
+
+/** Chat `chatId`, or a new one (stored once its first turn is) when it is null. */
+function openChat(uid: string, bookId: string, sid: string | null, chatId: string | null): MockChat {
+  if (chatId === null) return { id: "c-" + id(), user_id: uid, book_id: bookId, storyline_id: sid, title: null, created_at: now(), last_active: now(), messages: [] };
+  const c = db.chats.find((x) => x.id === chatId && x.user_id === uid && x.book_id === bookId && x.storyline_id === sid);
+  if (!c) throw new Error("Chat not found.");
+  return c;
+}
+
+function summary({ user_id: _u, book_id: _b, messages: _m, ...chat }: MockChat): ChatSummary {
+  return chat;
+}
 
 async function streamText(text: string, onEvent: (e: ChatEvent) => void) {
   const parts = text.match(/\S+\s*/g) ?? [];
@@ -423,19 +443,55 @@ const impl: Api = {
     return { storyline: s, graph: graphOf(s.book_id, sid) };
   },
 
-  async history(bookId, sid) {
+  async listChats(bookId, sid) {
     await latency();
     const u = currentUser();
     if (!u) return [];
-    return db.messages[msgKey(u.id, bookId, sid)] ?? [];
+    return db.chats
+      .filter((c) => c.user_id === u.id && c.book_id === bookId && c.storyline_id === sid)
+      .sort((a, b) => b.last_active.localeCompare(a.last_active))
+      .map(summary);
   },
 
-  async send(bookId, sid, text, onEvent) {
+  async history(bookId, sid, chatId) {
+    await latency();
+    return withProposal(bookId, sid, openChat(requireUser().id, bookId, sid, chatId).messages);
+  },
+
+  async send(bookId, sid, chatId, text, onEvent) {
     const u = requireUser();
     findBook(bookId);
+    const chat = openChat(u.id, bookId, sid, chatId);
     let storyline = sid ? findStoryline(sid) : null;
     const route = classify(text, !!storyline);
     const userMsg: Message = { id: "m-" + id(), role: "user", content: text, created_at: now() };
+    const waiting = storyline ? db.drafts[storyline.id] : undefined;
+
+    if (storyline && waiting && text === ACCEPT_PROPOSAL) {
+      onEvent({ type: "phase", label: "Updating the story…" });
+      await wait(700);
+      onEvent({ type: "phase", label: "Writing the changed chapters…" });
+      await wait(800);
+      // Applying a new op discards any reverted tail (it can no longer be redone).
+      db.ops[storyline.id] = [...(db.ops[storyline.id] ?? []).filter((o) => !o.reverted), waiting.op];
+      storyline.head_op_seq = waiting.op.seq;
+      storyline.updated_at = now();
+      delete db.drafts[storyline.id];
+      const content = `Done: your storyline now follows “${waiting.premise}”. The story map shows what changed.`;
+      await streamText(content, onEvent);
+      const assistant: Message = { id: "m-" + id(), role: "assistant", content, route: "edit", diff: waiting.diff, citations: waiting.citations, created_at: now() };
+      return persist(chat, userMsg, assistant, graphOf(bookId, storyline.id), storyline);
+    }
+
+    if (storyline && waiting && route !== "edit") {
+      // Discussing the proposal: the demo can't redraft, but the proposal stays open.
+      onEvent({ type: "phase", label: "Reconsidering the draft…" });
+      await wait(700);
+      const content = `(Demo) Noted: “${text}”. The real assistant would revise the draft with that and show you the new version. Press Accept when you're happy with it.`;
+      await streamText(content, onEvent);
+      const assistant: Message = { id: "m-" + id(), role: "assistant", content, route: "edit", created_at: now() };
+      return persist(chat, userMsg, assistant, graphOf(bookId, storyline.id), storyline);
+    }
 
     if (/\binkitt\b/i.test(text)) {
       onEvent({ type: "phase", label: "Checking your Inkitt connection…" });
@@ -447,7 +503,7 @@ const impl: Api = {
         : "To publish on Inkitt I need your Inkitt access token. Paste it in the window that just opened, and I'll carry on.";
       await streamText(content, onEvent);
       const assistant: Message = { id: "m-" + id(), role: "assistant", content, created_at: now() };
-      const turn = persist(u.id, bookId, storyline?.id ?? null, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
+      const turn = persist(chat, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
       return u.inkitt_connected ? turn : { ...turn, actions: ["inkitt_token_required"] };
     }
 
@@ -466,7 +522,7 @@ const impl: Api = {
         const assistant: Message = { id: "m-" + id(), role: "assistant", content: "", route, trace: res.trace, created_at: now() };
         await streamText(res.content, onEvent);
         assistant.content = res.content;
-        return persist(u.id, bookId, storyline?.id ?? null, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
+        return persist(chat, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
       }
       if (!storyline) {
         // An edit from canon branches a new storyline.
@@ -478,16 +534,13 @@ const impl: Api = {
         db.storylines.push(storyline);
         db.ops[tmpSid] = [];
       }
-      onEvent({ type: "phase", label: "Writing the new passage…" });
+      onEvent({ type: "phase", label: "Checking the story still holds together…" });
       await wait(800);
-      // Applying a new op discards any reverted tail (it can no longer be redone).
-      db.ops[storyline.id] = (db.ops[storyline.id] ?? []).filter((o) => !o.reverted);
-      db.ops[storyline.id].push({ seq: opSeq, reverted: false, diff: res.diff!, passage: res.passage! });
-      storyline.head_op_seq = opSeq;
-      storyline.updated_at = now();
+      // The edit waits as a draft (replacing any earlier one) until the reader accepts it.
       const d = res.diff!;
-      const assistant: Message = {
-        id: "m-" + id(), role: "assistant", content: "", route, trace: res.trace, created_at: now(),
+      db.drafts[storyline.id] = {
+        premise: text,
+        op: { seq: opSeq, reverted: false, diff: d, passage: res.passage! },
         diff: {
           divergence_pos: res.divergence_pos!, op_seq: opSeq, passage: res.passage!,
           added: [...d.add_entities.map((e) => e.key), ...d.add_events.map((e) => e.key)],
@@ -495,9 +548,11 @@ const impl: Api = {
         },
         citations: [{ chapter: d.add_events[0].chapter, page: null, quote: res.passage!.split(". ")[0] + ".", storyline_chunk: true }],
       };
-      await streamText(res.content, onEvent);
-      assistant.content = res.content;
-      return persist(u.id, bookId, storyline.id, userMsg, assistant, graphOf(bookId, storyline.id), storyline, sid === null);
+      const content = `${res.content}\n\nHere's the change on the story map. Accept it to update the storyline, or tell me what to change.`;
+      const assistant: Message = { id: "m-" + id(), role: "assistant", content: "", route, trace: res.trace, created_at: now() };
+      await streamText(content, onEvent);
+      assistant.content = content;
+      return persist(chat, userMsg, assistant, graphOf(bookId, storyline.id), storyline, sid === null);
     }
 
     onEvent({ type: "phase", label: route === "global" ? "Reading community summaries…" : "Searching the index…" });
@@ -510,7 +565,7 @@ const impl: Api = {
     await wait(400);
     await streamText(ans.content, onEvent);
     const assistant: Message = { id: "m-" + id(), role: "assistant", content: ans.content, route, citations: ans.citations, trace: ans.trace, created_at: now() };
-    return persist(u.id, bookId, storyline?.id ?? null, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
+    return persist(chat, userMsg, assistant, graphOf(bookId, storyline?.id ?? null), storyline);
   },
 };
 
@@ -525,15 +580,28 @@ export const mockApi: Api = Object.fromEntries(
   ]),
 ) as unknown as Api;
 
-function persist(uid: string, bookId: string, sid: string | null, user: Message, assistant: Message, graph: StoryGraph, storyline: Storyline | null, branched = false): ChatTurn {
-  const k = msgKey(uid, bookId, sid);
-  (db.messages[k] ??= []).push(user, assistant);
-  if (branched) {
-    // Keep the canon conversation too, so the turn shows up where it was asked.
-    (db.messages[msgKey(uid, bookId, null)] ??= []).push(user, { ...assistant, content: assistant.content + `\n\nThis branched a new storyline: **${storyline!.title}**.` });
-  }
+function persist(chat: MockChat, user: Message, assistant: Message, graph: StoryGraph, storyline: Storyline | null, branched = false): ChatTurn {
+  // As on the server, a canon chat's first edit moves the chat into the storyline it branched.
+  if (branched) chat.storyline_id = storyline!.id;
+  chat.title ??= user.content.slice(0, 80);
+  chat.last_active = now();
+  chat.messages.push(user, assistant);
+  if (!db.chats.includes(chat)) db.chats.push(chat);
   save();
-  return { user, assistant, graph, storyline };
+  const [answer] = withProposal(chat.book_id, chat.storyline_id, [assistant]);
+  return { user, assistant: answer, graph, storyline, chat: summary(chat) };
+}
+
+/** As on the server, the waiting draft rides on the latest answer (it is not stored there). */
+function withProposal(bookId: string, sid: string | null, messages: Message[]): Message[] {
+  const draft = sid ? db.drafts[sid] : undefined;
+  const last = messages.map((m) => m.role).lastIndexOf("assistant");
+  if (!sid || !draft || last < 0) return messages;
+  const canon = canonGraph(bookId);
+  const s = findStoryline(sid);
+  const ops = [...(db.ops[sid] ?? []).filter((o) => o.seq <= s.head_op_seq), draft.op];
+  const proposal: Proposal = { storyline_id: sid, premise: draft.premise, diff: draft.diff, graph: materialize(canon, ops, draft.op.seq) };
+  return messages.map((m, i) => (i === last ? { ...m, proposal } : m));
 }
 
 /** Wipes demo data (exposed for the profile page). */

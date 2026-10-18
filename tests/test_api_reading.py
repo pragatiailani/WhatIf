@@ -146,7 +146,9 @@ def test_ask_streams_and_saves(client, monkeypatch):
     assert a["trace"]["steps"] == [{"label": "Searching the graph and the text", "tool": "retrieve",
                                     "detail": 'query: "Why did Ravi leave?"', "why": "", "found": ""}]
 
-    # one conversation per user and book: the second question reuses the session
+    assert turn["chat"]["id"] == seen[0][1] and turn["chat"]["storyline_id"] is None
+
+    # without a chat_id the question goes to the latest chat
     client.post(f"/books/{b.id}/chat", json={"text": "And then?"}, headers=h)
     assert seen[0][1] == seen[1][1]
     assert sessions.get_session(seen[0][1]).user_id == u.id
@@ -184,6 +186,34 @@ def test_history_is_per_user(client, monkeypatch):
     assert len(client.get(f"/books/{b.id}/messages", headers=h).json()) == 2
     assert client.get(f"/books/{b.id}/messages", headers=other_h).json() == []
     assert client.get(f"/books/{b.id}/messages?storyline_id=s1", headers=h).json() == []
+
+
+def test_many_chats_per_book(client, monkeypatch):
+    seen = fake_stream(monkeypatch)
+    _, h = user()
+    _, other_h = user("x@example.com")
+    b = book()
+    ask = lambda **body: events_of(client.post(f"/books/{b.id}/chat", json={"text": "Q", **body}, headers=h))[-1][1]
+
+    first = ask()["chat"]["id"]
+    second = ask(new_chat=True)["chat"]["id"]
+    assert first != second
+    assert ask(chat_id=first)["chat"]["id"] == first  # an older chat can be continued
+
+    chats = client.get(f"/books/{b.id}/chats", headers=h).json()
+    assert [c["id"] for c in chats] == [first, second]  # most recently active first
+    assert client.get(f"/books/{b.id}/chats", headers=other_h).json() == []
+
+    assert len(client.get(f"/books/{b.id}/messages?chat_id={first}", headers=h).json()) == 4
+    assert len(client.get(f"/books/{b.id}/messages?chat_id={second}", headers=h).json()) == 2
+    assert client.get(f"/books/{b.id}/messages?chat_id={first}", headers=other_h).status_code == 404
+
+    # a chat can only be continued by its owner, on its own book and storyline
+    res = client.post(f"/books/{b.id}/chat", json={"text": "Q", "chat_id": first}, headers=other_h)
+    assert res.status_code == 404
+    res = client.post(f"/books/{book().id}/chat", json={"text": "Q", "chat_id": first}, headers=h)
+    assert res.status_code == 404
+    assert len(seen) == 3
 
 
 def test_global_route_when_communities_used():

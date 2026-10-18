@@ -182,6 +182,19 @@ export interface StoryDiff {
   op_seq: number;
 }
 
+/** A verified storyline edit waiting for the reader: nothing changes until they accept it. */
+export interface Proposal {
+  storyline_id: string;
+  premise: string;
+  /** what accepting would change */
+  diff: StoryDiff;
+  /** the storyline's graph if accepted */
+  graph: StoryGraph;
+}
+
+/** What the Accept button sends; the agent commits the proposal when it reads it. */
+export const ACCEPT_PROPOSAL = "Accept these changes.";
+
 export interface Message {
   id: string;
   role: "user" | "assistant";
@@ -189,14 +202,29 @@ export interface Message {
   route?: Route;
   citations?: Citation[];
   trace?: RetrievalTrace;
+  /** what this turn changed in the storyline (set on the turn that applied an edit) */
   diff?: StoryDiff;
+  /** on the latest answer while an edit waits for the reader to accept or discuss it */
+  proposal?: Proposal;
   created_at: string;
+}
+
+/** One of the user's conversations on a book (canon) or in a storyline. */
+export interface ChatSummary {
+  id: string;
+  storyline_id: string | null;
+  /** the first question, once one is asked */
+  title: string | null;
+  created_at: string;
+  last_active: string;
 }
 
 export interface ChatTurn {
   user: Message;
   assistant: Message;
-  /** graph after the turn; sent only when the turn changed it (storyline edits) */
+  /** the chat the turn was saved in; a new one when none was given */
+  chat: ChatSummary;
+  /** graph after the turn; sent only when the turn changed it (an accepted storyline edit) */
   graph?: StoryGraph;
   /** null when chatting with canon; a new storyline when an edit is made from canon */
   storyline: Storyline | null;

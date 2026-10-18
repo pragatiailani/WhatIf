@@ -110,7 +110,8 @@ def test_expired_refresh_token_is_rejected(client, mongo):
     [
         ("get", "/books"), ("get", "/books/b1"), ("get", "/books/b1/ingestion/events"),
         ("post", "/books"), ("get", "/books/b1/graph"), ("get", "/books/b1/storylines"),
-        ("post", "/books/b1/storylines"), ("get", "/books/b1/messages"), ("post", "/books/b1/chat"),
+        ("post", "/books/b1/storylines"), ("get", "/books/b1/messages"), ("get", "/books/b1/chats"),
+        ("post", "/books/b1/chat"),
         ("get", "/storylines"), ("get", "/storylines/s1"), ("patch", "/storylines/s1"),
         ("post", "/sessions"), ("get", "/sessions/s1/messages"), ("post", "/sessions/s1/chat"),
         ("get", "/auth/me"), ("put", "/auth/me/inkitt"), ("delete", "/auth/me/inkitt"),

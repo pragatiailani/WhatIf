@@ -1,5 +1,6 @@
 import type {
   Book,
+  ChatSummary,
   ChatTurn,
   Checkpoint,
   IngestionProgress,
@@ -62,10 +63,14 @@ export interface Api {
   restoreCheckpoint(storylineId: string, checkpointId: string): Promise<{ storyline: Storyline; graph: StoryGraph }>;
 
   // chat
-  history(bookId: string, storylineId: string | null): Promise<Message[]>;
+  /** The user's chats on a book (or in a storyline), most recently active first. */
+  listChats(bookId: string, storylineId: string | null): Promise<ChatSummary[]>;
+  history(bookId: string, storylineId: string | null, chatId: string): Promise<Message[]>;
+  /** Asks in chat `chatId`, or in a new chat when it is null. */
   send(
     bookId: string,
     storylineId: string | null,
+    chatId: string | null,
     text: string,
     onEvent: (e: ChatEvent) => void,
   ): Promise<ChatTurn>;

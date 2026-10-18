@@ -21,7 +21,7 @@ from app.agents import book_qa
 from app.main import app
 from app.mcp_server import storyline_tools as sl_tools
 from app.repo import sessions, storylines, users
-from app.repo.models import Storyline, User
+from app.repo.models import ChatSession, Storyline, User
 from app.repo.storylines import StorylinesUnavailable
 from app.storyline import publish
 from app.storyline.schema import Fact
@@ -63,13 +63,19 @@ def test_canon_graph_and_a_storyline_graph_that_lists_what_it_hid(api):
     assert canon["events"][1]["involves"] == [VIK, RAVI] and canon["hidden"] == []
 
     sl = api.client.post(f"/books/{api.book}/storylines", json={"title": "Ravi lives"}, headers=h).json()
-    session = sessions.book_chat(sl["owner_id"], api.book, sl["id"])
+    session = sessions.create_session(ChatSession(user_id=sl["owner_id"], book_id=api.book, storyline_id=sl["id"]))
     sl_tools.start_draft(api.book, session.id, "e2", "Ravi survives",
                          [Fact(entity="Ravi", attribute="status", value="alive")])  # fmt: skip
     sl_tools.resolve_item(api.book, session.id, "e2", "rewrite", new_summary="Vik wounds Ravi")
     sl_tools.resolve_item(api.book, session.id, "r1", "hide")
+    for ref in ("e3", "e4"):
+        sl_tools.resolve_item(api.book, session.id, ref, "keep")
+    graph_url = f"/books/{api.book}/graph?storyline_id={sl['id']}"
+    assert {"e2", "r1"} <= set(api.client.get(graph_url, headers=h).json()["hidden"])  # the owner sees the open draft
+    sl_tools.verify_draft(api.book, session.id)
+    sl_tools.commit_draft(api.book, session.id)
 
-    g = api.client.get(f"/books/{api.book}/graph?storyline_id={sl['id']}", headers=h).json()
+    g = api.client.get(graph_url, headers=h).json()
     assert {"e2", "r1"} <= set(g["hidden"])
     assert any(e["key"] == "e2" for e in g["events"])  # hidden items are listed, not removed
     assert any(e["sid"] == sl["id"] and e["summary"] == "Vik wounds Ravi" for e in g["events"])
@@ -184,7 +190,7 @@ EDIT = [
 ]
 
 
-def test_an_edit_in_a_canon_chat_branches_a_storyline_with_graph_and_diff(api, scripted):
+def test_an_edit_in_a_canon_chat_branches_a_storyline_and_proposes_the_draft(api, scripted):
     _, h = person()
     scripted(*EDIT, AIMessage(content="Ravi now survives; verification passed."))
     res = api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived?"}, headers=h)
@@ -196,20 +202,29 @@ def test_an_edit_in_a_canon_chat_branches_a_storyline_with_graph_and_diff(api, s
 
     turn = events[-1][1]
     sl = turn["storyline"]
-    assert sl["title"].startswith("Ravi survives") and sl["head_op_seq"] > 0 and sl["premise"].startswith("Ravi survives")
+    assert sl["title"].startswith("Ravi survives") and sl["premise"].startswith("Ravi survives")
+    assert sl["head_op_seq"] == 0  # nothing is committed until the reader accepts
     reply = turn["assistant"]
     assert reply["route"] == "edit" and "Ravi now survives" in reply["content"]
-    assert reply["diff"]["op_seq"] == sl["head_op_seq"] and reply["diff"]["divergence_pos"] == 1000.0
-    assert len(reply["diff"]["added"]) == 1 and reply["diff"]["hidden"] == ["e2"]
-    assert any(e["sid"] == sl["id"] for e in turn["graph"]["events"]) and "e2" in turn["graph"]["hidden"]
+    assert "diff" not in reply  # nothing committed yet
+    assert any(e["sid"] == sl["id"] for e in turn["graph"]["events"])  # the owner's graph shows the draft
 
-    # the conversation that made the edit now lives in the storyline, diff included
+    # the verified draft waits for the reader, with what it would change and the graph it would give
+    proposal = reply["proposal"]
+    assert proposal["storyline_id"] == sl["id"] and proposal["premise"] == "Ravi survives Vik's attack"
+    assert proposal["diff"]["divergence_pos"] == 1000.0
+    assert len(proposal["diff"]["added"]) == 1 and proposal["diff"]["hidden"] == ["e2"]
+    assert any(e["sid"] == sl["id"] for e in proposal["graph"]["events"]) and "e2" in proposal["graph"]["hidden"]
+    shown = api.client.get(f"/books/{api.book}/graph?storyline_id={sl['id']}", headers=h).json()
+    assert shown == proposal["graph"]  # the owner sees their draft until they accept or discard it
+
+    # the conversation that made the edit now lives in the storyline, proposal included
     history = api.client.get(f"/books/{api.book}/messages?storyline_id={sl['id']}", headers=h).json()
-    assert [m["role"] for m in history] == ["user", "assistant"] and history[1]["diff"] == reply["diff"]
+    assert [m["role"] for m in history] == ["user", "assistant"] and history[1]["proposal"] == proposal
     assert api.client.get(f"/books/{api.book}/messages", headers=h).json() == []  # canon chat starts fresh
 
 
-def test_a_question_asked_afterwards_in_the_storyline_has_no_diff_and_no_graph(api, scripted):
+def test_a_question_asked_afterwards_in_the_storyline_has_no_diff(api, scripted):
     _, h = person()
     scripted(*EDIT, AIMessage(content="Done."))
     first = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived?"}, headers=h))
@@ -218,7 +233,8 @@ def test_a_question_asked_afterwards_in_the_storyline_has_no_diff_and_no_graph(a
     scripted(AIMessage(content="He survived the attack."))
     again = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What happened to Ravi?", "storyline_id": sl_id}, headers=h))
     turn = again[-1][1]
-    assert turn["storyline"]["id"] == sl_id and "diff" not in turn["assistant"] and "graph" not in turn
+    assert turn["storyline"]["id"] == sl_id and "diff" not in turn["assistant"]
+    assert turn["graph"]["entities"]  # every storyline turn carries the graph after it
     assert turn["assistant"]["route"] == "local"
     history = api.client.get(f"/books/{api.book}/messages?storyline_id={sl_id}", headers=h).json()
     assert len(history) == 4  # the edit and the follow-up are one conversation
@@ -239,7 +255,7 @@ def make_branch(api, *, commit=True):
     """A storyline on the scenario book with chapters 2 and 3 changed (by the same edit as above)."""
     u, _ = person("owner@example.com")
     sl = storylines.create_storyline(Storyline(book_id=api.book, owner_id=u.id, name="Ravi lives"))
-    session = sessions.book_chat(u.id, api.book, sl.id)
+    session = sessions.create_session(ChatSession(user_id=u.id, book_id=api.book, storyline_id=sl.id))
     sl_tools.start_draft(api.book, session.id, "e2", "Ravi survives", [Fact(entity="Ravi", attribute="status", value="alive")])
     for ref, action, extra in (("e2", "rewrite", {"new_summary": "Vik wounds Ravi"}), ("r1", "hide", {}),
                                ("e3", "rewrite", {"new_summary": "Asha keeps vigil"}), ("e4", "keep", {})):  # fmt: skip
@@ -301,24 +317,29 @@ def test_the_turn_that_commits_shows_the_rewritten_text_in_the_chat(api, scripte
     turn = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived? Go ahead."}, headers=h))[-1][1]
     diff = turn["assistant"]["diff"]
     assert diff["passage"].startswith("Chapter 2\n\n") and "vigil" in diff["passage"]  # the new text, with its title
-    assert turn["assistant"]["route"] == "edit" and "graph" in turn
+    assert len(diff["added"]) == 1 and diff["hidden"] == ["e2"] and diff["op_seq"] == turn["storyline"]["head_op_seq"]
+    assert turn["assistant"]["route"] == "edit" and "graph" in turn and "proposal" not in turn["assistant"]
 
 
 def test_approving_in_a_later_turn_also_shows_the_text(api, scripted):
-    """Ideate and draft in one turn, say yes in the next: the second turn writes no graph changes,
-    but it writes the chapters, and the reader sees them."""
+    """Draft in one turn, accept in the next: the second turn commits the draft's graph changes and
+    writes the chapters, and the reader sees both."""
     _, h = person()
     scripted(*EDIT, AIMessage(content="Ready to save; shall I?"))
     first = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "What if Ravi lived?"}, headers=h))[-1][1]
     sl_id = first["storyline"]["id"]
-    assert first["assistant"]["diff"]["passage"] == ""  # nothing is written until the reader says yes
+    assert "diff" not in first["assistant"] and "proposal" in first["assistant"]  # nothing changes until yes
 
     scripted(call("commit_draft", {}, "t8"), AIMessage(content="Saved."))
-    second = sse(api.client.post(f"/books/{api.book}/chat", json={"text": "yes, update it", "storyline_id": sl_id}, headers=h))[-1][1]
+    body = {"text": "Accept these changes.", "storyline_id": sl_id}
+    second = sse(api.client.post(f"/books/{api.book}/chat", json=body, headers=h))[-1][1]
     diff = second["assistant"]["diff"]
-    assert diff["added"] == [] and diff["hidden"] == []  # no new graph changes in this turn
+    assert len(diff["added"]) == 1 and diff["hidden"] == ["e2"]  # the draft, now part of the storyline
     assert diff["passage"].startswith("Chapter 2\n\n") and "vigil" in diff["passage"]
-    assert "graph" in second and second["storyline"]["id"] == sl_id
+    assert "proposal" not in second["assistant"] and second["storyline"]["id"] == sl_id
+    assert any(e["sid"] == sl_id for e in second["graph"]["events"]) and "e2" in second["graph"]["hidden"]
+    history = api.client.get(f"/books/{api.book}/messages?storyline_id={sl_id}", headers=h).json()
+    assert not any("proposal" in m for m in history)
 
 
 def test_a_long_chapter_is_previewed_not_dumped(api):

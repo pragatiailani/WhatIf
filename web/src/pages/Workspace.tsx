@@ -1,11 +1,12 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowLeft, BookMarked, ChevronDown, GitFork, Globe, History, Lock, MessageSquare, Network, RotateCcw, Save, Send, Sparkles, Wand2, X,
+  ArrowLeft, BookMarked, Check, ChevronDown, GitFork, Globe, History, Lock, MessageSquare, MessagesSquare, Network, Plus, RotateCcw, Save, Send, Sparkles, Wand2, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
-import type { Book, Checkpoint, Citation, Message, Reasoning, StoryDiff, StoryGraph, Storyline, TraceStep } from "../api/types";
+import { ACCEPT_PROPOSAL } from "../api/types";
+import type { Book, ChatSummary, Checkpoint, Citation, Message, Proposal, Reasoning, StoryDiff, StoryGraph, Storyline, TraceStep } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { GraphView, type Overlay } from "../components/GraphView";
 import { InkDots, PageLoader, QuillLoader } from "../components/Loaders";
@@ -39,6 +40,13 @@ export default function Workspace() {
   const [lines, setLines] = useState<Storyline[]>([]);
   const [graph, setGraph] = useState<StoryGraph | null>(null);
   const [messages, setMessages] = useState<Message[] | null>(null);
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  /** the open chat; null for a new one, saved when its first question is asked */
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
+  const shownChat = useRef<string | null>(null);
+  const chatParam = useRef(params.get("chat"));
+  chatParam.current = params.get("chat");
   const [pending, setPending] = useState<Pending | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const [restoreOverlay, setRestoreOverlay] = useState<{ overlay: Overlay; label: string; ghost: StoryGraph } | null>(null);
@@ -52,24 +60,53 @@ export default function Workspace() {
   const mine = !!storyline && storyline.owner_id === user?.id;
   const readOnly = !!storyline && !mine;
 
-  // Load book, storyline, graph and history whenever the storyline changes.
+  // Load book, storyline, graph and chats whenever the storyline changes, then open the chat named
+  // in ?chat= or the most recent one.
   useEffect(() => {
     let live = true;
     setMessages(null);
     setRestoreOverlay(null);
-    Promise.all([api.getBook(bookId), sid ? api.getStoryline(sid) : Promise.resolve(null), api.getGraph(bookId, sid), api.history(bookId, sid), api.listStorylines(bookId)])
-      .then(([b, s, g, h, ls]) => {
+    Promise.all([api.getBook(bookId), sid ? api.getStoryline(sid) : Promise.resolve(null), api.getGraph(bookId, sid), api.listChats(bookId, sid), api.listStorylines(bookId)])
+      .then(async ([b, s, g, cs, ls]) => {
+        const pick = cs.find((c) => c.id === chatParam.current)?.id ?? cs[0]?.id ?? null;
+        const h = pick ? await api.history(bookId, sid, pick) : [];
         if (!live) return;
         setBook(b);
         setStoryline(s);
         setGraph(g);
+        setChats(cs);
+        setChatId(pick);
+        shownChat.current = pick;
         setMessages(h);
         setLines(ls);
-        setActive([...h].reverse().find((m) => m.role === "assistant")?.id ?? null);
+        setActive(lastAnswer(h));
       })
       .catch((e) => live && setError(errorText(e)));
     return () => void (live = false);
   }, [bookId, sid]);
+
+  const openChat = useCallback(
+    async (id: string | null) => {
+      shownChat.current = id;
+      setChatId(id);
+      setActive(null);
+      setRestoreOverlay(null);
+      setParams(id ? { chat: id } : {}, { replace: true });
+      if (!id) return setMessages([]);
+      setChatLoading(true);
+      try {
+        const h = await api.history(bookId, sid, id);
+        if (shownChat.current !== id) return; // another chat was opened meanwhile
+        setMessages(h);
+        setActive(lastAnswer(h));
+      } catch (e) {
+        toast(errorText(e), "error");
+      } finally {
+        if (shownChat.current === id) setChatLoading(false);
+      }
+    },
+    [bookId, sid, setParams, toast],
+  );
 
   const send = useCallback(
     async (text: string) => {
@@ -79,7 +116,7 @@ export default function Workspace() {
       setRestoreOverlay(null);
       setPane("chat");
       try {
-        const turn = await api.send(bookId, sid, text, (e) =>
+        const turn = await api.send(bookId, sid, chatId, text, (e) =>
           setPending((p) => {
             if (!p) return p;
             // A new phase means the text so far was the agent's reasoning; it comes back in a step.
@@ -89,23 +126,29 @@ export default function Workspace() {
             return { ...p, text: p.text + e.text };
           }),
         );
-        setMessages((m) => [...(m ?? []), turn.user, turn.assistant]);
+        // Only the latest answer carries the waiting proposal; an earlier one is settled or replaced.
+        setMessages((m) => [...(m ?? []).map(({ proposal: _settled, ...rest }) => rest), turn.user, turn.assistant]);
         if (turn.graph) setGraph(turn.graph);
         setActive(turn.assistant.id);
         if (turn.actions?.includes("inkitt_token_required")) setInkittRetry(text);
         if (turn.storyline && !sid) {
-          toast(`Your what-if branched a new storyline: “${turn.storyline.title}”`, "success");
-          nav(`/read/${bookId}/${turn.storyline.id}`);
-        } else if (turn.storyline) {
-          setStoryline(turn.storyline);
+          // The chat moved into the new storyline: carry on in it there.
+          toast(`Your what-if started a new storyline: “${turn.storyline.title}”`, "success");
+          nav(`/read/${bookId}/${turn.storyline.id}?chat=${turn.chat.id}`);
+          return;
         }
+        if (turn.storyline) setStoryline(turn.storyline);
+        shownChat.current = turn.chat.id;
+        setChatId(turn.chat.id);
+        setChats((cs) => [turn.chat, ...cs.filter((c) => c.id !== turn.chat.id)]);
+        setParams({ chat: turn.chat.id }, { replace: true });
       } catch (e) {
         toast(errorText(e), "error");
       } finally {
         setPending(null);
       }
     },
-    [bookId, sid, pending, nav, toast],
+    [bookId, sid, chatId, pending, nav, toast, setParams],
   );
 
   // A new storyline opens with ?prompt=<premise>; send it once.
@@ -119,7 +162,10 @@ export default function Workspace() {
   }, [params, messages, send, setParams]);
 
   const activeMsg = messages?.find((m) => m.id === active);
-  const overlay: Overlay = restoreOverlay?.overlay ?? (activeMsg?.diff ? { kind: "diff", diff: activeMsg.diff, trace: activeMsg.trace } : activeMsg?.trace ? { kind: "trace", trace: activeMsg.trace } : null);
+  // A waiting proposal previews the graph it would give; the storyline itself changes on accept.
+  const proposal = activeMsg?.proposal;
+  const change = proposal?.diff ?? activeMsg?.diff;
+  const overlay: Overlay = restoreOverlay?.overlay ?? (change ? { kind: "diff", diff: change, trace: activeMsg?.trace } : activeMsg?.trace ? { kind: "trace", trace: activeMsg.trace } : null);
 
   if (error) return <div className="p-10 text-center text-rose">{error}</div>;
   if (!book || !graph || !messages) return <PageLoader label="Opening the story…" />;
@@ -189,8 +235,10 @@ export default function Workspace() {
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(380px,0.9fr)_1.1fr]">
         <section className={`min-h-0 flex-col border-line/60 lg:flex lg:border-r ${pane === "chat" ? "flex" : "hidden"}`}>
+          {!readOnly && <ChatBar chats={chats} current={chatId} inStoryline={!!storyline} disabled={!!pending} onPick={openChat} />}
           <Chat
             messages={messages}
+            loading={chatLoading}
             pending={pending}
             active={active}
             onActivate={(id) => (setActive(id), setRestoreOverlay(null))}
@@ -203,9 +251,9 @@ export default function Workspace() {
           />
         </section>
         <section className={`relative min-h-0 flex-col lg:flex ${pane === "graph" ? "flex" : "hidden"}`}>
-          <GraphHeader overlay={overlay} activeMsg={activeMsg} restoreLabel={restoreOverlay?.label} onClear={() => (setActive(null), setRestoreOverlay(null))} />
+          <GraphHeader overlay={overlay} activeMsg={activeMsg} proposed={!!proposal && !restoreOverlay} restoreLabel={restoreOverlay?.label} onClear={() => (setActive(null), setRestoreOverlay(null))} />
           <div className="min-h-0 flex-1">
-            <GraphView graph={restoreOverlay?.ghost ?? graph} overlay={overlay} />
+            <GraphView graph={restoreOverlay?.ghost ?? proposal?.graph ?? graph} overlay={overlay} />
           </div>
         </section>
       </div>
@@ -235,6 +283,8 @@ export default function Workspace() {
     </div>
   );
 }
+
+const lastAnswer = (h: Message[]) => [...h].reverse().find((m) => m.role === "assistant")?.id ?? null;
 
 /** `g` plus nodes reverted away since `prev`, kept as hidden ghosts so the restore can show what left. */
 function withGhosts(g: StoryGraph, prev: StoryGraph, removed: string[]): StoryGraph {
@@ -300,15 +350,48 @@ function PickItem({ icon, title, sub, active, onClick }: { icon: React.ReactNode
 
 // --- chat ------------------------------------------------------------------
 
+function ChatBar({ chats, current, inStoryline, disabled, onPick }: { chats: ChatSummary[]; current: string | null; inStoryline: boolean; disabled: boolean; onPick: (id: string | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const cur = chats.find((c) => c.id === current);
+  return (
+    <div className="flex items-center gap-2 border-b border-line/60 px-3 py-1.5">
+      <div className="relative min-w-0 flex-1">
+        <button onClick={() => setOpen((o) => !o)} disabled={disabled || chats.length === 0} className="flex max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-sm enabled:hover:bg-surface-2 disabled:cursor-default">
+          <MessageSquare className="size-3.5 shrink-0 text-gold" />
+          <span className="truncate">{cur ? cur.title ?? "Untitled chat" : "New chat"}</span>
+          {chats.length > 0 && <ChevronDown className={`size-3.5 shrink-0 transition ${open ? "rotate-180" : ""}`} />}
+        </button>
+        <AnimatePresence>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+              <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className="card absolute left-0 top-full z-40 mt-1 max-h-96 w-80 max-w-[85vw] overflow-y-auto p-1.5">
+                <p className="px-2.5 pb-1 pt-1.5 text-[10px] uppercase tracking-wider text-ink-mute">Your chats {inStoryline ? "in this storyline" : "on this book"}</p>
+                {chats.map((c) => <PickItem key={c.id} icon={<MessageSquare className="size-3.5 text-gold" />} title={c.title ?? "Untitled chat"} sub={timeAgo(c.last_active)} active={c.id === current} onClick={() => (onPick(c.id), setOpen(false))} />)}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+      </div>
+      <Button variant="ghost" className="shrink-0 px-2.5 py-1 text-xs" disabled={disabled || current === null} onClick={() => onPick(null)} title="Start a new chat">
+        <Plus className="size-3.5" /> New chat
+      </Button>
+    </div>
+  );
+}
+
 function Chat({
-  messages, pending, active, onActivate, onSend, graph, readOnly, storyline, onFork, onShowGraph,
+  messages, loading, pending, active, onActivate, onSend, graph, readOnly, storyline, onFork, onShowGraph,
 }: {
-  messages: Message[]; pending: Pending | null; active: string | null; onActivate: (id: string) => void; onSend: (t: string) => void;
+  messages: Message[]; loading: boolean; pending: Pending | null; active: string | null; onActivate: (id: string) => void; onSend: (t: string) => void;
   graph: StoryGraph; readOnly: boolean; storyline: Storyline | null; onFork: () => void; onShowGraph: () => void;
 }) {
   const [text, setText] = useState("");
+  /** the reader pressed Discuss: their next message is feedback on the proposal */
+  const [discussing, setDiscussing] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
+  const lastAnswerId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, pending?.text, pending?.phase]);
@@ -325,8 +408,13 @@ function Chat({
     if (!text.trim()) return;
     onSend(text.trim());
     setText("");
+    setDiscussing(false);
   };
-  const edit = looksLikeEdit(text);
+  const edit = looksLikeEdit(text) && !discussing;
+  const discuss = () => {
+    setDiscussing(true);
+    ta.current?.focus();
+  };
 
   return (
     <>
@@ -338,7 +426,8 @@ function Chat({
             <Button variant="outline" className="px-3 py-1.5" onClick={onFork}><GitFork className="size-3.5" /> Fork</Button>
           </div>
         )}
-        {messages.length === 0 && !pending && (
+        {loading && <div className="flex justify-center py-10"><InkDots className="text-gold" /></div>}
+        {!loading && messages.length === 0 && !pending && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center py-10 text-center">
             <motion.div animate={{ rotate: [0, 8, -6, 0] }} transition={{ duration: 6, repeat: Infinity }}>
               <Sparkles className="size-10 text-gold" />
@@ -358,9 +447,17 @@ function Chat({
           </motion.div>
         )}
 
-        <div className="space-y-5">
+        <div className={`space-y-5 ${loading ? "hidden" : ""}`}>
           {messages.map((m) =>
-            m.role === "user" ? <UserBubble key={m.id} m={m} /> : <AssistantBubble key={m.id} m={m} reverted={!!storyline && !!m.diff && m.diff.op_seq > storyline.head_op_seq} active={active === m.id} onActivate={() => onActivate(m.id)} onShowGraph={onShowGraph} />,
+            m.role === "user" ? (
+              <UserBubble key={m.id} m={m} />
+            ) : (
+              <AssistantBubble key={m.id} m={m} reverted={!!storyline && !!m.diff && m.diff.op_seq > storyline.head_op_seq} active={active === m.id} onActivate={() => onActivate(m.id)} onShowGraph={onShowGraph}>
+                {m.proposal && m.id === lastAnswerId && !readOnly && (
+                  <ProposalActions proposal={m.proposal} busy={!!pending} discussing={discussing} onAccept={() => (setDiscussing(false), onSend(ACCEPT_PROPOSAL))} onDiscuss={discuss} />
+                )}
+              </AssistantBubble>
+            ),
           )}
           {pending && (
             <>
@@ -392,6 +489,13 @@ function Chat({
 
       <form onSubmit={submit} className="border-t border-line/60 p-3 sm:p-4">
         <AnimatePresence>
+          {discussing && (
+            <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="mb-2 flex items-center gap-1.5 text-xs text-violet">
+              <MessagesSquare className="size-3.5" />
+              <span className="flex-1">What should change in the proposal? Your suggestion goes back to the assistant.</span>
+              <button type="button" onClick={() => setDiscussing(false)} className="text-ink-mute hover:text-ink" aria-label="Stop discussing"><X className="size-3.5" /></button>
+            </motion.p>
+          )}
           {edit && text && (
             <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className={`mb-2 flex items-center gap-1.5 text-xs ${readOnly ? "text-rose" : "text-sage"}`}>
               <Wand2 className="size-3.5" />
@@ -415,7 +519,7 @@ function Chat({
                 submit();
               }
             }}
-            placeholder={storyline ? "Ask about this storyline, or “What if…”" : "Ask a question, or “What if…”"}
+            placeholder={discussing ? "e.g. Keep the scene where they meet, but make it later" : storyline ? "Ask about this storyline, or “What if…”" : "Ask a question, or “What if…”"}
             className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] outline-none placeholder:text-ink-mute"
             disabled={!!pending}
           />
@@ -443,7 +547,7 @@ const ROUTE_BADGE = {
   edit: { tone: "sage", label: "Storyline edit" },
 } as const;
 
-function AssistantBubble({ m, active, reverted, onActivate, onShowGraph }: { m: Message; active: boolean; reverted: boolean; onActivate: () => void; onShowGraph: () => void }) {
+function AssistantBubble({ m, active, reverted, onActivate, onShowGraph, children }: { m: Message; active: boolean; reverted: boolean; onActivate: () => void; onShowGraph: () => void; children?: React.ReactNode }) {
   const [why, setWhy] = useState(false);
   const r = m.route ? ROUTE_BADGE[m.route] : null;
   return (
@@ -462,6 +566,7 @@ function AssistantBubble({ m, active, reverted, onActivate, onShowGraph }: { m: 
       <Markdown text={m.content} className="prose-story text-[15px]" />
       {m.diff?.passage && <Passage text={m.diff.passage} />}
       {m.citations && m.citations.length > 0 && <Citations items={m.citations} />}
+      {children}
       {m.trace && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line/60 pt-3">
           <button onClick={(e) => (e.stopPropagation(), setWhy((w) => !w), onActivate())} className="flex items-center gap-1.5 text-xs text-violet hover:underline">
@@ -476,6 +581,20 @@ function AssistantBubble({ m, active, reverted, onActivate, onShowGraph }: { m: 
         {why && m.trace?.reasoning && <ReasoningChain key="chain" reasoning={m.trace.reasoning} />}
         {why && m.trace && <TraceSteps key="steps" steps={m.trace.steps} />}
       </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function ProposalActions({ proposal, busy, discussing, onAccept, onDiscuss }: { proposal: Proposal; busy: boolean; discussing: boolean; onAccept: () => void; onDiscuss: () => void }) {
+  return (
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} onClick={(e) => e.stopPropagation()} className="mt-4 rounded-xl border border-sage/30 bg-sage/5 p-3">
+      <p className="text-[11px] uppercase tracking-wider text-sage">Proposed change · not applied yet</p>
+      <p className="mt-1 text-sm text-ink">{proposal.premise}</p>
+      <div className="mt-2 flex flex-wrap gap-1.5"><DiffChips diff={proposal.diff} /></div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button className="!bg-sage px-3 py-1.5" disabled={busy} onClick={onAccept}><Check className="size-4" /> Accept</Button>
+        <Button variant="outline" className={`px-3 py-1.5 ${discussing ? "!border-violet/50 text-violet" : ""}`} disabled={busy} onClick={onDiscuss}><MessagesSquare className="size-4" /> Discuss</Button>
+      </div>
     </motion.div>
   );
 }
@@ -573,12 +692,15 @@ function TraceSteps({ steps }: { steps: TraceStep[] }) {
 
 // --- graph header ------------------------------------------------------------
 
-function GraphHeader({ overlay, activeMsg, restoreLabel, onClear }: { overlay: Overlay; activeMsg?: Message; restoreLabel?: string; onClear: () => void }) {
+function GraphHeader({ overlay, activeMsg, proposed, restoreLabel, onClear }: { overlay: Overlay; activeMsg?: Message; proposed: boolean; restoreLabel?: string; onClear: () => void }) {
   let title = "The whole story";
   let detail = "Select an answer to see the path it took.";
   if (restoreLabel && overlay?.kind === "diff") {
     title = restoreLabel;
     detail = `${overlay.diff.added.length} nodes returned · ${overlay.diff.hidden.length} removed`;
+  } else if (proposed && overlay?.kind === "diff") {
+    title = "Proposed change · not applied yet";
+    detail = `${overlay.diff.added.length} would be added · ${overlay.diff.hidden.length} removed · Accept to apply`;
   } else if (overlay?.kind === "diff") {
     title = "What this edit changed";
     detail = `Diverges at story position ${overlay.diff.divergence_pos} · op ${overlay.diff.op_seq}`;

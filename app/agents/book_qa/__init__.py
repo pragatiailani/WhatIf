@@ -91,6 +91,9 @@ PHASES = {
 DEFAULT_PHASE = "Working…"
 FIRST_PHASE = "Reading your question…"
 MODEL_NODE = "model"  # create_agent's LLM node; other nodes (summarisation) never stream
+# Nodes whose updates are this turn's work. Middleware nodes are skipped: summarisation re-sends
+# the kept history as its update, which would put earlier calls in this turn's trace.
+TURN_NODES = (MODEL_NODE, "tools")
 
 
 def build_agent(llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None):
@@ -290,7 +293,9 @@ async def _stream(
         raise ValueError(f"unknown session '{session_id}' for book '{book_id}'")
     if checkpointer is ...:
         checkpointer = get_checkpointer()
-    head_before = _head_seq(session.storyline_id)  # with the time, tells what this turn changed
+    before = storylines.get_storyline(session.storyline_id) if session.storyline_id else None
+    committed_before = before.committed_seq if before else 0  # with the time, tells what this turn committed
+    divergence = before.draft.divergence_pos if before and before.draft else None
     turn_started = utcnow()
 
     yield "phase", FIRST_PHASE
@@ -313,8 +318,10 @@ async def _stream(
                 if text := _text(chunk.content):
                     yield "token", text
             else:  # "updates": {node: state update}; collect this turn's messages
-                for update in data.values():
-                    for m in (update or {}).get("messages", []) if isinstance(update, dict) else []:
+                for node, update in data.items():
+                    if node not in TURN_NODES or not isinstance(update, dict):
+                        continue
+                    for m in update.get("messages") or []:
                         if isinstance(m, AIMessage | ToolMessage):
                             turn.append(m)
                         if isinstance(m, ToolMessage):
@@ -337,7 +344,7 @@ async def _stream(
     # An edit may have bound this chat to a storyline (start_draft creates one): look it up again.
     session = sessions.get_session(session_id) or session
     line = storylines.get_storyline(session.storyline_id) if session.storyline_id else None
-    diff = diff_out(line, head_before, turn_started) if line else None
+    diff = diff_out(line, committed_before, turn_started, divergence) if line else None
     user_msg = sessions.add_message(Message(session_id=session_id, role="user", content=question))
     assistant_msg = sessions.add_message(
         Message(session_id=session_id, role="assistant", content=answer, citations=citations,
@@ -358,10 +365,6 @@ async def _stream(
     }
 
 
-
-def _head_seq(storyline_id: str | None) -> int:
-    line = storylines.get_storyline(storyline_id) if storyline_id else None
-    return line.head_seq if line else 0
 
 
 def route_of(trace: list[dict]) -> str:

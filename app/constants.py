@@ -23,8 +23,8 @@ REFRESH_COOKIE = "whatif_refresh"
 REFRESH_COOKIE_PATH = "/auth"
 MIN_PASSWORD_LENGTH = 8
 # Browser origins that may call the API with cookies; add more with CORS_ORIGINS. Cookies need
-# explicit origins, never "*".
-DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+# explicit origins, never "*". Any local port is allowed since Vite moves off 5173 when it is taken.
+DEFAULT_CORS_ORIGIN_REGEX = r"http://(localhost|127\.0\.0\.1)(:\d+)?"
 
 # --- LLM -----------------------------------------------------------------
 

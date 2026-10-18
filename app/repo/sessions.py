@@ -25,22 +25,13 @@ def get_session(session_id: str) -> ChatSession | None:
     return ChatSession.model_validate(doc) if doc else None
 
 
-def find_book_chat(
-    user_id: str, book_id: str, storyline_id: str | None = None
-) -> ChatSession | None:
-    """The user's chat on a book (canon, or one storyline): their oldest session there. The web
-    app keeps one conversation per book; `/sessions` can open more."""
-    key = {"user_id": user_id, "book_id": book_id, "storyline_id": storyline_id}
-    doc = collection(SESSIONS_COLLECTION).find_one(key, sort=[("created_at", ASCENDING)])
-    return ChatSession.model_validate(doc) if doc else None
-
-
-def book_chat(user_id: str, book_id: str, storyline_id: str | None = None) -> ChatSession:
-    """`find_book_chat`, creating the session on first use."""
-    found = find_book_chat(user_id, book_id, storyline_id)
-    return found or create_session(
-        ChatSession(user_id=user_id, book_id=book_id, storyline_id=storyline_id)
+def list_sessions(user_id: str, book_id: str, storyline_id: str | None) -> list[ChatSession]:
+    """The user's chats about a book in one storyline (None = canon), most recently active first."""
+    cursor = collection(SESSIONS_COLLECTION).find(
+        {"user_id": user_id, "book_id": book_id, "storyline_id": storyline_id},
+        sort=[("last_active", DESCENDING)],
     )
+    return [ChatSession.model_validate(d) for d in cursor]
 
 
 def set_summary(session_id: str, summary: str) -> None:

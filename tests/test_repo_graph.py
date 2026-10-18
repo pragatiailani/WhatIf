@@ -86,13 +86,13 @@ def test_entity_relations_can_be_limited_to_types(fake):
 
 def test_events_involving_filters_event_and_entity_and_groups_participants(fake):
     fake.rows = [[{"key": "e2", "summary": "Vik kills Ravi", "story_pos": 1000.0, "embedding": [1]},
-                  ["ravi", "vik"]]]  # fmt: skip
+                  ["ravi", "vik"], 1000.0]]  # fmt: skip
     out = graph.events_involving(STORY, ["ravi", "vik"], 1000.0)
     _, cypher, params = fake.calls[0]
     assert [(e.key, e.embedding, keys) for e, keys in out] == [("e2", None, ["ravi", "vik"])]
     assert params == {**STORY_PARAMS, "keys": ["ravi", "vik"], "pos_from": 1000.0}
     assert "INVOLVES" in cypher and "(e.sid IS NULL" in cypher and "(n.sid IS NULL" in cypher
-    assert "ORDER BY e.story_pos" in cypher
+    assert "e.story_pos AS pos ORDER BY pos" in cypher
 
 
 def test_relations_involving_filters_both_ends_and_the_edge(fake):
