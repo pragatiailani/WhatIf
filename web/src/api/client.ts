@@ -1,7 +1,7 @@
 import type {
   Book,
+  ChatSummary,
   ChatTurn,
-  Checkpoint,
   IngestionProgress,
   Message,
   Session,
@@ -52,22 +52,22 @@ export interface Api {
   listMyStorylines(): Promise<Storyline[]>;
   getStoryline(id: string): Promise<Storyline>;
   createStoryline(bookId: string, title: string, premise: string): Promise<Storyline>;
-  forkStoryline(id: string): Promise<Storyline>;
   updateStoryline(id: string, patch: { title?: string; visibility?: Visibility }): Promise<Storyline>;
   starStoryline(id: string): Promise<Storyline>;
 
-  // checkpoints
-  listCheckpoints(storylineId: string): Promise<Checkpoint[]>;
-  saveCheckpoint(storylineId: string, name: string): Promise<Checkpoint>;
-  restoreCheckpoint(storylineId: string, checkpointId: string): Promise<{ storyline: Storyline; graph: StoryGraph }>;
-
   // chat
-  history(bookId: string, storylineId: string | null): Promise<Message[]>;
+  /** The user's chats on a book (or in a storyline), most recently active first. */
+  listChats(bookId: string, storylineId: string | null): Promise<ChatSummary[]>;
+  history(bookId: string, storylineId: string | null, chatId: string): Promise<Message[]>;
+  /** Asks in chat `chatId`, or in a new chat when it is null. With `auto` (accept all) the
+   *  assistant settles a whole draft in one turn without asking before each batch. */
   send(
     bookId: string,
     storylineId: string | null,
+    chatId: string | null,
     text: string,
     onEvent: (e: ChatEvent) => void,
+    opts?: { auto?: boolean },
   ): Promise<ChatTurn>;
 }
 

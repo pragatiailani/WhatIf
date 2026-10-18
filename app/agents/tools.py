@@ -12,8 +12,8 @@ import json
 import logging
 import os
 import sys
-from collections.abc import AsyncIterator, Mapping
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +24,7 @@ from mcp import ClientSession
 
 from app import inkitt
 from app.config import Settings, get_settings
-from app.constants import AGENT_EXCLUDED_TOOLS, INKITT_AGENT_TOOLS
+from app.constants import AGENT_EXCLUDED_TOOLS, INKITT_AGENT_TOOLS, INKITT_COVER_URL, INKITT_GENRES
 from app.repo import users
 from app.repo.storylines import StorylinesUnavailable
 
@@ -104,10 +104,19 @@ def _connect_tool(message: str) -> BaseTool:
 
 
 def _publish_tool(
-    session: ClientSession, book_id: str, user_id: str, storyline_id: str | None = None
+    connect: Callable[[], AbstractAsyncContextManager[ClientSession]],
+    book_id: str,
+    user_id: str,
+    storyline_id: str | None = None,
+    cover_url: str = INKITT_COVER_URL,
 ) -> BaseTool:
+    """`connect` opens an Inkitt session for this call alone: an upload Inkitt refuses outright
+    (a 413, a dropped connection) then fails only the tool call, not the agent's whole turn."""
+
     async def publish_to_inkitt(
-        summary: str = "",
+        summary: str,
+        genre: Literal[INKITT_GENRES],
+        sub_genre: str = "",
         story_type: Literal["original", "fanfiction", "public_domain"] = "original",
         age_rating: Literal["kids", "teenager", "adults"] | None = None,
         publish: bool = False,
@@ -119,12 +128,17 @@ def _publish_tool(
             if story.owner_id != user_id:
                 return json.dumps({"error": "Only books the user uploaded and storylines they "
                                             "created can be sent to Inkitt."})
-            out = await inkitt.publish_story(
-                session, story, summary=summary, story_type=story_type,
-                age_rating=age_rating, publish=publish,
-            )
-        except (inkitt.InkittError, StorylinesUnavailable, ValueError) as exc:
-            return json.dumps({"error": str(exc)})
+            async with connect() as session:
+                out = await inkitt.publish_story(
+                    session, story, summary=summary, genre=genre, sub_genre=sub_genre,
+                    story_type=story_type, age_rating=age_rating, publish=publish,
+                    cover_url=cover_url,
+                )
+        except Exception as exc:  # session errors come wrapped in exception groups
+            cause = inkitt.root_cause(exc)
+            if not isinstance(cause, inkitt.InkittError | StorylinesUnavailable | ValueError):
+                log.warning("publishing to Inkitt failed user=%s", user_id, exc_info=True)
+            return json.dumps({"error": inkitt.failure_text(cause)})
         return json.dumps(out)
 
     return StructuredTool.from_function(
@@ -133,12 +147,16 @@ def _publish_tool(
         description="Send the story of this chat to the user's Inkitt account as a new Inkitt "
         "story: the book, or in a storyline chat the rewritten book (the original chapters "
         "before the storyline diverges, then the storyline's own). One Inkitt chapter per "
-        "chapter, copied from the stored text. Chapters are drafts unless `publish` is true; set "
-        "it only after the user has explicitly confirmed going live. Write `summary` yourself "
-        "(a blurb of a few sentences, from search_communities). `story_type`: original for the "
-        "user's own book, public_domain for classics, fanfiction for a storyline built on "
-        "someone else's book. Each book or storyline is sent once; afterwards use the Inkitt "
-        "tools on the returned story_id.",
+        "chapter, copied from the stored text. The What If cover is added automatically. "
+        "Chapters are drafts unless `publish` is true; set it only after the user has explicitly "
+        "confirmed going live. Never ask the user for the summary or genre: write `summary` "
+        "yourself (an enticing blurb of a few sentences, from search_communities; for a "
+        "storyline, about the story as it now goes) and pick the `genre` that fits best, with "
+        "`sub_genre` as an Inkitt sub-genre shortname of it (e.g. 'epic', 'dark', 'general'; "
+        "get_settings lists them, an unknown one falls back to 'general'). `story_type`: "
+        "original for the user's own book, public_domain for classics, fanfiction for a "
+        "storyline built on someone else's book. Each book or storyline is sent once; calling "
+        "again refreshes its summary, genre and cover and publishes it if `publish` is true.",
     )
 
 
@@ -159,7 +177,9 @@ async def _inkitt_tools(
         return [_connect_tool("Inkitt rejected the saved token or could not be reached. The app "
                               "is asking the user for a new Inkitt access token.")]
     allowed = [hide_args(t, {}) for t in tools if t.name in INKITT_AGENT_TOOLS]
-    return [*allowed, _publish_tool(session, book_id, user_id, storyline_id)]
+    publish = _publish_tool(lambda: inkitt.open_session(pat), book_id, user_id, storyline_id,
+                            cover_url=get_settings().inkitt_cover_url)
+    return [*allowed, publish]
 
 
 @asynccontextmanager

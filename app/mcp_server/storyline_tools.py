@@ -128,7 +128,11 @@ def start_draft(
     scope = branch_scope(book_id, session_id)
     if not premise.strip():
         raise ValueError("premise is empty")
-    return draft.start_draft(session, anchor_event, premise.strip(), _facts(scope, facts))
+    out = draft.start_draft(session, anchor_event, premise.strip(), _facts(scope, facts))
+    # The chat is in the storyline now (created on first use): answer from it from here on.
+    out["note"] = ("This chat now works in the storyline and the read tools answer from it. "
+                   "Answer the reader from the storyline, not the original book.")
+    return out
 
 
 def get_open_items(

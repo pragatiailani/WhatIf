@@ -189,6 +189,29 @@ async def test_stream_yields_phases_tokens_and_done(env):
     assert done["user_message"].content == "Why?"
 
 
+async def test_stream_ignores_messages_resent_by_middleware(env, monkeypatch):
+    from langchain_core.messages import ToolMessage
+
+    s = new_session()
+    old_call = call("get_timeline", {"entity": "Ravi"}, "old")
+    old_result = ToolMessage(content="{}", name="get_timeline", tool_call_id="old")
+    now_call = call("get_chunks", {"chunk_ids": ["c1"]}, "t1")
+    now_result = ToolMessage(content="{}", name="get_chunks", tool_call_id="t1")
+
+    class Agent:  # what create_agent streams when summarisation kicks in mid-turn
+        async def astream(self, *_, **__):
+            yield "updates", {"model": {"messages": [now_call]}}
+            yield "updates", {"tools": {"messages": [now_result]}}
+            yield "updates", {"SummarizationMiddleware.before_model":
+                              {"messages": [old_call, old_result, now_call, now_result]}}
+            yield "updates", {"model": {"messages": [AIMessage(content="Done.")]}}
+
+    monkeypatch.setattr(book_qa, "build_agent", lambda *_, **__: Agent())
+    events = [e async for e in book_qa.stream("book1", s.id, "Why?", llm=fake(), checkpointer=None)]
+    assert [t["tool"] for t in events[-1][1]["trace"]] == ["get_chunks"]
+    assert [v["tool"] for k, v in events if k == "step"] == ["get_chunks"]
+
+
 def test_graph_refs_from_tool_results():
     from langchain_core.messages import ToolMessage
 
@@ -310,3 +333,119 @@ def test_route_follows_the_tools_used():
     assert book_qa.route_of([{"tool": "generate_passage"}]) == "edit"
     assert book_qa.route_of([]) == "local"
 
+
+
+async def test_accept_all_runs_again_until_the_draft_is_done(env, monkeypatch):
+    s = new_session()
+    nexts = iter([("(Accept all is on.) 3 items are still open.", (3, 1)), None])
+    calls = []
+
+    def auto_next(session_id, seen):
+        calls.append(seen)
+        return next(nexts)
+
+    monkeypatch.setattr(book_qa, "auto_next", auto_next)
+    llm = fake(AIMessage(content="Chapters 1-3 done, 3 left."), AIMessage(content="All settled."))
+    events = [e async for e in book_qa.stream("book1", s.id, "What if Ravi stayed?", auto=True,
+                                              llm=llm, checkpointer=InMemorySaver())]
+
+    assert calls == [None, (3, 1)]  # checked after each run, with the state it last saw
+    assert ("phase", "Carrying on: 3 left to settle…") in events
+    assert "3 items are still open" in str(llm.seen[1][-1].content)  # the nudge, not the reader
+    assert "ACCEPT-ALL MODE" in llm.seen[0][0].content
+    done = events[-1][1]
+    assert done["answer"] == "All settled." and done["user_message"].content == "What if Ravi stayed?"
+    assert [m.role for m in sessions.last_messages(s.id, 10)] == ["user", "assistant"]
+
+
+async def test_without_accept_all_one_run(env, monkeypatch):
+    s = new_session()
+    monkeypatch.setattr(book_qa, "auto_next", lambda *_: pytest.fail("not in accept-all mode"))
+    llm = fake(AIMessage(content="Shall I carry on?"))
+    out = await ask(s, "What if Ravi stayed?", llm)
+    assert out["answer"] == "Shall I carry on?"
+    assert "ACCEPT-ALL MODE" not in llm.seen[0][0].content
+
+
+async def test_a_storyline_chat_is_answered_from_the_storyline(env):
+    from app.repo import storylines
+    from app.repo.models import Storyline
+
+    sl = storylines.create_storyline(Storyline(book_id="book1", name="Ravi lives",
+                                               premise="What if Ravi survived?"))
+    s = sessions.create_session(ChatSession(book_id="book1", storyline_id=sl.id))
+    llm = fake(AIMessage(content="Ravi keeps the shop."))
+    await ask(s, "What does Ravi do next?", llm)
+    system = llm.seen[0][0].content
+    assert "THIS CHAT'S STORYLINE" in system and '"Ravi lives"' in system
+    assert "What if Ravi survived?" in system
+
+    canon = fake(AIMessage(content="Ravi dies."))
+    await ask(new_session(), "What does Ravi do next?", canon)
+    assert "THIS CHAT'S STORYLINE" not in canon.seen[0][0].content
+
+
+def test_auto_next_stops_when_done_or_stuck(env):
+    from app.repo import storylines
+    from app.repo.models import DraftState, Storyline, StorylineItem
+
+    sl = storylines.create_storyline(Storyline(book_id="book1", name="x", premise="p"))
+    s = sessions.create_session(ChatSession(book_id="book1", storyline_id=sl.id))
+    assert book_qa.auto_next(s.id, None) is None  # no draft: nothing to finish
+    assert book_qa.auto_next(new_session().id, None) is None  # no storyline at all
+
+    storylines.set_draft(sl.id, DraftState(premise="p", anchor_event="e1", divergence_pos=1.0,
+                                           affected=[]))
+    storylines.add_items([StorylineItem(storyline_id=sl.id, kind="event", ref="e2", pos=2.0,
+                                        summary="s", reason="r")])
+    message, seen = book_qa.auto_next(s.id, None)
+    assert message.startswith("(Accept all is on.) 1 items are still open") and seen[0] == 1
+    assert book_qa.auto_next(s.id, seen) is None  # the last run changed nothing: stop
+
+    storylines.resolve_item(sl.id, "e2", "keep")
+    message, seen = book_qa.auto_next(s.id, seen)
+    assert seen[0] == 0 and "verify_draft" in message  # queue empty but not verified yet
+
+
+def test_close_tool_calls_fills_buried_gaps():
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    from app.agents.tool_gaps import INTERRUPTED, close_tool_calls
+
+    crashed = AIMessage(content="", tool_calls=[
+        {"name": "publish_to_inkitt", "args": {}, "id": "a"},
+        {"name": "get_chunks", "args": {}, "id": "b"}])
+    history = [
+        HumanMessage(content="Publish it"), crashed,
+        ToolMessage(content="{}", name="get_chunks", tool_call_id="b"),
+        HumanMessage(content="hi"),  # later questions saved after the crash
+        ToolMessage(content="{}", name="x", tool_call_id="orphan"),  # answers nothing
+        HumanMessage(content="hello?"),
+    ]
+    fixed = close_tool_calls(history)
+    assert [type(m).__name__ for m in fixed] == [
+        "HumanMessage", "AIMessage", "ToolMessage", "ToolMessage", "HumanMessage", "HumanMessage"]
+    assert (fixed[3].tool_call_id, fixed[3].content, fixed[3].status) == ("a", INTERRUPTED, "error")
+
+    healthy = [HumanMessage(content="q"), call("get_chunks", {}, "t1"),
+               ToolMessage(content="{}", name="get_chunks", tool_call_id="t1"), AIMessage(content="a")]
+    assert all(x is y for x, y in zip(close_tool_calls(healthy), healthy, strict=True))
+
+
+async def test_chat_with_a_crashed_tool_call_answers_again(env):
+    """The real agent, with a saved history where a crash buried an unanswered call."""
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    saver, s = InMemorySaver(), new_session()
+    config = {"configurable": {"thread_id": s.id}}
+    agent = book_qa.build_agent(fake(), make_tools(), saver)
+    crashed = call("get_chunks", {"chunk_ids": ["c1"]}, "lost")
+    await agent.aupdate_state(config, {"messages": [
+        HumanMessage(content="Publish it"), crashed, HumanMessage(content="hi")]}, as_node="model")
+
+    llm = fake(AIMessage(content="Back on track."))
+    out = await ask(s, "Hello?", llm, saver)
+    assert out["answer"] == "Back on track."
+    sent = llm.seen[0]
+    at = next(i for i, m in enumerate(sent) if getattr(m, "tool_calls", None))
+    assert isinstance(sent[at + 1], ToolMessage) and sent[at + 1].tool_call_id == "lost"

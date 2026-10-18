@@ -305,6 +305,35 @@ def test_full_flow_ends_in_a_committed_storyline(world):
     assert "Vik kills Ravi" not in summaries and "Asha keeps vigil by the wounded Ravi" in summaries
 
 
+def test_a_second_change_ripples_through_the_first_changes_events(world):
+    world.start()
+    finish_all(world)
+    assert tools.verify_draft(world.book, world.session)["passed"]
+    tools.commit_draft(world.book, world.session)
+    first = {e.key: e.summary for e in world.mem.events if e.sid}
+
+    tools.start_draft(world.book, world.session, "e1", "Asha leaves before the attack",
+                      [Fact(entity="Asha", attribute="location", value="abroad")])
+    queued = {i["ref"] for i in tools.get_open_items(world.book, world.session, 10)["items"]}
+    assert set(first) <= queued  # the first change's events are this storyline's story now
+
+    vigil = next(k for k, s in first.items() if s.startswith("Asha keeps vigil"))
+    out = world.resolve(vigil, "rewrite", new_summary="Asha hears of the attack from abroad",
+                        affects=["Ravi"])
+    left = {i["ref"] for i in tools.get_open_items(world.book, world.session, 10)["items"]}
+    assert out["new_event"] not in left  # what this draft wrote is never queued against itself
+
+
+def test_a_draft_that_changes_no_event_does_not_pass(world):
+    world.start()
+    for ref in ("e2", "r1", "e3", "e4"):
+        world.resolve(ref, "keep")
+    result = tools.verify_draft(world.book, world.session)
+    assert not result["passed"] and "no_story_change" in [i["kind"] for i in result["issues"]]
+    with pytest.raises(ValueError, match="verified"):
+        tools.commit_draft(world.book, world.session)
+
+
 def test_a_change_after_verification_invalidates_it(world):
     world.start()
     finish_all(world)
@@ -546,6 +575,21 @@ def test_search_finds_rewritten_text_instead_of_the_original(world):
     assert tools.text_tools.search_chunks(world.book, "funeral")["results"][0]["chapter"] == "Chapter 3"  # canon
     stale = tools.text_tools.search_chunks(world.book, "Vik killed", session_id=world.session)
     assert "superseded" in stale["results"][0]  # Chapter 2 changed but has no passage yet
+
+
+def test_retrieve_answers_from_the_storyline_not_canon(world):
+    from app.mcp_server import rag_tools
+
+    world.start()
+    finish_all(world)
+    tools.generate_passage(world.book, world.session, "Chapter 3")
+    hit = rag_tools.retrieve(world.book, "vigil", session_id=world.session)
+    assert hit["passages"][0]["chapter"] == "Chapter 3" and "vigil" in hit["passages"][0]["text"]
+    assert "superseded" not in hit["passages"][0]
+    funeral = rag_tools.retrieve(world.book, "funeral", session_id=world.session)
+    assert all("funeral" not in p["text"] for p in funeral["passages"])  # the original text is gone
+    canon = rag_tools.retrieve(world.book, "funeral")
+    assert any("funeral" in p["text"] for p in canon["passages"])
 
 
 def test_discard_drops_passages_written_in_the_draft(world):

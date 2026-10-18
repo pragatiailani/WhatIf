@@ -1,7 +1,8 @@
 """The verification gate. A draft can be committed only if this passes on its current version.
 
-Two layers: deterministic checks over the storyline's graph view (nothing left open, nobody acts
-after being recorded dead, nobody recorded alive is still killed), then an LLM judge that reads
+Two layers: deterministic checks over the storyline's graph view (nothing left open, the draft
+changes at least one event, nobody acts after being recorded dead, nobody recorded alive is still
+killed), then an LLM judge that reads
 each chapter the draft touches against the premise and the facts. Any failure to run a check
 counts as a failure: the gate never passes by default.
 """
@@ -22,6 +23,11 @@ from app.storyline.prompt import JUDGE_SYSTEM, judge_user
 from app.storyline.schema import Continuity
 
 log = logging.getLogger(__name__)
+STORY_OPS = ("add_event", "hide_node")  # ops that change what happens, not just what is recorded
+NO_STORY_CHANGE = (
+    "the draft changes no event, so the story would read exactly as before: rewrite or hide the "
+    "events the premise changes (or discard_draft if nothing should change)"
+)
 
 
 def _issue(kind: str, detail: str, ref: str | None = None) -> dict[str, Any]:
@@ -42,6 +48,9 @@ def check_invariants(sl: Storyline, scope: GraphScope) -> list[dict[str, Any]]:
     open_n = storylines.count_items(sl.id, "open")
     if open_n:
         issues.append(_issue("open_items", f"{open_n} queue item(s) are not resolved yet"))
+    draft_ops = storylines.list_ops(sl.id, after_seq=sl.committed_seq, upto_seq=sl.head_seq)
+    if not any(o.kind in STORY_OPS for o in draft_ops):
+        issues.append(_issue("no_story_change", NO_STORY_CHANGE))
     for key, (status, pos) in _latest_status(sl).items():
         if status in DEAD_STATUSES:
             for event, role in graph.entity_events(scope, key):

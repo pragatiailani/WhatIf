@@ -20,7 +20,9 @@ export default function Library() {
 
   useEffect(() => {
     setBooks(null);
-    (tab === "public" ? api.listPublicBooks() : api.listMyBooks()).then(setBooks).catch((e) => (toast(errorText(e), "error"), setBooks([])));
+    (tab === "public" ? api.listPublicBooks() : api.listMyBooks())
+      .then((bs) => setBooks(bs.filter((b) => b.status !== "failed"))) // failed uploads are not readable
+      .catch((e) => (toast(errorText(e), "error"), setBooks([])));
   }, [tab, toast]);
 
   const genres = useMemo(() => ["All", ...new Set((books ?? []).flatMap((b) => (b.genre ? [b.genre] : [])))], [books]);

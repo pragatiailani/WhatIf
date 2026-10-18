@@ -70,7 +70,7 @@ export default function AuthPage({ mode }: { mode: "signin" | "signup" }) {
           <AnimatePresence mode="wait">
             <motion.div key={mode} initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }}>
               <h1 className="font-display text-4xl font-semibold">{signup ? "Join the library" : "Welcome back"}</h1>
-              <p className="mt-2 text-sm text-ink-soft">{signup ? "Your storylines, uploads and forks, all in one place." : "Your storylines are right where you left them."}</p>
+              <p className="mt-2 text-sm text-ink-soft">{signup ? "Your storylines and uploads, all in one place." : "Your storylines are right where you left them."}</p>
 
               <motion.form onSubmit={submit} className="mt-8 space-y-4" animate={shake ? { x: [0, -10, 9, -6, 4, 0] } : {}} key={shake} transition={{ duration: 0.4 }}>
                 {signup && <Field icon={UserIcon} label="Name"><input className="input pl-10" value={name} onChange={(e) => setName(e.target.value)} placeholder="Dorothy Gale" autoComplete="name" required /></Field>}

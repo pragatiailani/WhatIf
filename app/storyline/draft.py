@@ -16,7 +16,15 @@ from typing import Any
 
 from app.constants import MAX_QUEUE_ITEMS
 from app.repo import graph, sessions, storylines
-from app.repo.models import ChatSession, DraftState, GraphEvent, Storyline, StorylineItem, new_id
+from app.repo.models import (
+    ChatSession,
+    DraftState,
+    GraphEvent,
+    GraphRelation,
+    Storyline,
+    StorylineItem,
+    new_id,
+)
 from app.storyline.schema import Fact
 
 ACTIONS = ("keep", "hide", "rewrite")
@@ -49,10 +57,16 @@ def _set_facts(sl: Storyline, facts: Sequence[Fact], pos: float) -> None:
         )
 
 
+def _drafted(sl: Storyline, item: GraphEvent | GraphRelation) -> bool:
+    """Whether the open draft wrote this event or relation (not canon, not an earlier commit)."""
+    return item.sid is not None and (item.created_by_op or 0) > sl.committed_seq
+
+
 def enqueue(sl: Storyline, keys: Sequence[str] | None = None) -> int:
     """Queue the events and relations after the divergence that involve `keys` (default: every
-    affected entity). Items already queued are skipped; storyline-authored events are not queued.
-    Returns how many were new."""
+    affected entity). Items already queued are skipped, and so is what this draft wrote itself.
+    Events an earlier, committed change wrote are queued like canon ones: they are this
+    storyline's story now, so a new change ripples through them too. Returns how many were new."""
     draft = _draft(sl)
     keys = list(keys if keys is not None else draft.affected)
     if not keys:
@@ -61,7 +75,7 @@ def enqueue(sl: Storyline, keys: Sequence[str] | None = None) -> int:
     names = _names(scope, keys)
     items: list[StorylineItem] = []
     for event, involved in graph.events_involving(scope, keys, draft.divergence_pos):
-        if event.sid is not None:
+        if _drafted(sl, event):
             continue
         who = ", ".join(names.get(k, k) for k in involved)
         items.append(
@@ -70,7 +84,7 @@ def enqueue(sl: Storyline, keys: Sequence[str] | None = None) -> int:
                 summary=event.summary, chapter=event.chapter, reason=f"involves {who}",
             )
         )  # fmt: skip
-    rels = [r for r in graph.relations_involving(scope, keys, draft.divergence_pos) if r.sid is None]
+    rels = [r for r in graph.relations_involving(scope, keys, draft.divergence_pos) if not _drafted(sl, r)]
     pair = _names(scope, {k for r in rels for k in (r.src, r.dst)})
     for rel in rels:
         items.append(
@@ -270,3 +284,12 @@ def commit(sl: Storyline) -> dict[str, Any]:
     storylines.delete_items(sl.id)
     log.info("draft committed storyline=%s ops=%d", sl.id, fresh(sl.id).committed_seq)
     return {"committed": True, "storyline_id": sl.id, "ops": fresh(sl.id).committed_seq}
+
+
+def awaiting_approval(sl: Storyline) -> bool:
+    """Whether the draft is finished and verified, so all it needs is the reader's yes."""
+    return (
+        sl.draft is not None
+        and sl.verified_version == sl.version
+        and not storylines.count_items(sl.id, "open")
+    )

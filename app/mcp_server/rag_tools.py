@@ -18,7 +18,13 @@ from app.constants import (
     RETRIEVE_SEEDS,
     TOOL_MAX_CHUNKS_PER_CALL,
 )
-from app.mcp_server.common import branch_scope, entity_out, session_storyline, short
+from app.mcp_server.common import (
+    CANON_SUMMARIES_NOTE,
+    branch_scope,
+    entity_out,
+    session_storyline,
+    short,
+)
 from app.mcp_server.graph_tools import community_out
 from app.mcp_server.matching import content_words, match_entities
 from app.mcp_server.text_tools import (
@@ -28,6 +34,7 @@ from app.mcp_server.text_tools import (
     rank_chunks,
     snippet,
     superseded_note,
+    with_rewrites,
 )
 from app.repo import GraphScope, chunks, communities, graph, mentions
 
@@ -94,7 +101,8 @@ def retrieve(
         extra=[_mention_ranking(book_id, seed_keys), event_chunks],
     )  # fmt: skip
     terms = list(dict.fromkeys(content_words(query)))
-    return {
+    ranked, rewritten = with_rewrites(sl, views, ranked, query, terms)
+    out = {
         "entities": [{**entity_out(found[k]), "match": how} for k, how in seeds if k in found],
         "relations": relations,
         "communities": [
@@ -104,8 +112,11 @@ def retrieve(
         "events": [event_out(e, seq_ids) for e in events],
         "passages": [
             {**chunk_ref(c), "match": how, "text": snippet(c.text, terms, RETRIEVE_PASSAGE_CHARS),
-             **superseded_note(sl, views, c, set())}
+             **superseded_note(sl, views, c, rewritten)}
             for c, _, how in ranked[:limit]
         ],
         "semantic": query_vec is not None,
     }
+    if sl and out["communities"]:
+        out["communities_note"] = CANON_SUMMARIES_NOTE
+    return out

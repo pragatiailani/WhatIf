@@ -141,20 +141,16 @@ export const httpApi: Api = {
   listMyStorylines: () => req("/storylines?scope=mine"),
   getStoryline: (id) => req(`/storylines/${id}`),
   createStoryline: (bookId, title, premise) => req(`/books/${bookId}/storylines`, json("POST", { title, premise })),
-  forkStoryline: (id) => req(`/storylines/${id}/fork`, json("POST")),
   updateStoryline: (id, patch) => req(`/storylines/${id}`, json("PATCH", patch)),
   starStoryline: (id) => req(`/storylines/${id}/star`, json("POST")),
 
-  listCheckpoints: (sid) => req(`/storylines/${sid}/checkpoints`),
-  saveCheckpoint: (sid, name) => req(`/storylines/${sid}/checkpoints`, json("POST", { name })),
-  restoreCheckpoint: (sid, cid) => req(`/storylines/${sid}/checkpoints/${cid}/restore`, json("POST")),
-
-  history: (bookId, sid) => req(`/books/${bookId}/messages${sid ? `?storyline_id=${sid}` : ""}`),
-  send: async (bookId, sid, text, onEvent) => {
+  listChats: (bookId, sid) => req(`/books/${bookId}/chats${sid ? `?storyline_id=${sid}` : ""}`),
+  history: (bookId, sid, chatId) => req(`/books/${bookId}/messages?chat_id=${chatId}${sid ? `&storyline_id=${sid}` : ""}`),
+  send: async (bookId, sid, chatId, text, onEvent, opts) => {
     const res = await authFetch(`/books/${bookId}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ storyline_id: sid, text }),
+      body: JSON.stringify({ storyline_id: sid, chat_id: chatId, new_chat: chatId === null, text, auto: !!opts?.auto }),
     });
     if (!res.ok) throw await errorFrom(res);
     let turn: ChatTurn | null = null;

@@ -11,6 +11,7 @@ from app import auth, crypto, inkitt
 from app.agents import tools as agent_tools
 from app.api import chat
 from app.api.auth import router as auth_router
+from app.constants import INKITT_COVER_URL
 from app.repo import books, chunks, inkitt_stories, sessions, storylines, users
 from app.repo.models import Book, ChatSession, Chunk, User
 from app.repo.storylines import StorylineText
@@ -43,6 +44,32 @@ def make_book(owner_id=None, pages=None) -> Book:
     return book
 
 
+GENRES = {  # a slice of Inkitt's real get_settings genres
+    "main_genres": [
+        {"id": 2, "name": "Fantasy", "shortname": "fantasy"},
+        {"id": 7, "name": "Drama", "shortname": "drama"},
+        {"id": 13, "name": "Other", "shortname": "other"},
+    ],
+    "sub_genres": {
+        "2": [{"id": 20, "shortname": "dark"}, {"id": 21, "shortname": "epic"},
+              {"id": 22, "shortname": "general"}],
+        "7": [{"id": 70, "shortname": "family"}, {"id": 71, "shortname": "political"}],
+        "13": [{"id": 130, "shortname": "essays"}],
+    },
+}
+PUBLISH_ARGS = {"summary": "A boy and a debt.", "genre": "drama"}
+
+
+def connect(session):
+    """A `connect` for `_publish_tool` that hands out `session`."""
+
+    @asynccontextmanager
+    async def open_():
+        yield session
+
+    return open_
+
+
 class FakeInkitt:
     """Stands in for an Inkitt MCP ClientSession; records calls, answers like the real server."""
 
@@ -62,6 +89,8 @@ class FakeInkitt:
         if name == "create_chapter":
             self.next_chapter += 1
             return self._result({"chapter": {"id": self.next_chapter}})
+        if name == "get_settings":
+            return self._result({"settings": {"genres": GENRES}})
         return self._result({"ok": True})
 
     @staticmethod
@@ -114,20 +143,99 @@ def test_book_without_chapters_is_one_chapter(env):
 async def test_publish_book_creates_drafts_once(env):
     book = make_book()
     fake = FakeInkitt()
-    out = await inkitt.publish_story(fake, inkitt.book_story(book.id), summary="A boy and a debt.")
+    out = await inkitt.publish_story(fake, inkitt.book_story(book.id), summary="A boy and a debt.",
+                                     genre="fantasy", sub_genre="epic")
 
     assert out["status"] == "drafts_created" and out["story_id"] == 7
-    assert out["chapter_ids"] == [99, 101]
+    assert out["chapter_ids"] == [99, 101] and "setup_errors" not in out
     names = [n for n, _ in fake.calls]
-    assert names == ["create_story", "list_chapters", "update_chapter", "create_chapter"]
+    assert names == ["create_story", "list_chapters", "update_chapter", "create_chapter",
+                     "get_settings", "update_story", "update_cover"]
     assert fake.calls[0][1]["summary"] == "A boy and a debt."
     assert fake.calls[2][1] == {"story_id": 7, "chapter_id": 99, "name": "Chapter 1",
                                 "text": "Ravi left Delhi.\nIt rained.\nHe came back."}
+    assert fake.calls[5][1] == {
+        "story_id": 7, "ai_assisted": False, "summary": "A boy and a debt.",
+        "story_genres": [{"main_genre_id": 2, "sub_genre_id": 21,
+                          "main_genre_shortname": "fantasy", "sub_genre_shortname": "epic"}],
+    }
+    assert fake.calls[6][1] == {"story_id": 7, "cover_url": INKITT_COVER_URL}
     assert "publish_all_chapters" not in names
     assert inkitt_stories.get_story_id("book", book.id) == 7
 
-    again = await inkitt.publish_story(fake, inkitt.book_story(book.id))
-    assert again["status"] == "already_on_inkitt" and len(fake.calls) == 4
+    # sent again: no new story, but the metadata is refreshed and it can go live
+    fake.calls.clear()
+    again = await inkitt.publish_story(fake, inkitt.book_story(book.id), genre="drama", publish=True)
+    assert again["status"] == "published" and again["story_id"] == 7
+    assert [n for n, _ in fake.calls] == ["get_settings", "update_story", "update_cover",
+                                          "publish_all_chapters"]
+
+
+def test_long_chapters_go_up_in_parts():
+    para = "word " * 300  # ~1,500 chars
+    body = "\n\n".join(para.strip() for _ in range(10))  # ~15,000 chars
+    out = inkitt.split_long([("Short", "Hi."), ("Long", body)], limit=4000)
+    assert out[0] == ("Short", "Hi.")
+    titles = [t for t, _ in out[1:]]
+    assert titles == [f"Long (part {i})" for i in range(1, len(titles) + 1)] and len(titles) > 1
+    assert all(len(b) <= 4000 for _, b in out)
+    squash = lambda t: "".join(t.split())  # noqa: E731
+    assert squash("".join(b for _, b in out[1:])) == squash(body)  # nothing lost
+    # one giant paragraph with no breaks at all is still cut
+    assert all(len(b) <= 100 for _, b in inkitt.split_long([("X", "a" * 450)], limit=100))
+
+
+async def test_broken_upload_carries_on_where_it_stopped(env):
+    book = make_book()
+    fake = FakeInkitt(fail={"create_chapter"})  # chapter 1 fills the first chapter, chapter 2 fails
+    with pytest.raises(inkitt.InkittError):
+        await inkitt.publish_story(fake, inkitt.book_story(book.id), genre="drama")
+    assert inkitt_stories.get("book", book.id) == {"story_id": 7, "chapters_sent": 1, "uploaded": False}
+
+    fake.fail, fake.calls = set(), []
+    out = await inkitt.publish_story(fake, inkitt.book_story(book.id), genre="drama")
+    assert out["status"] == "drafts_created" and out["resumed_from_chapter"] == 2
+    names = [n for n, _ in fake.calls]
+    assert names[0] == "create_chapter" and "create_story" not in names  # no second story
+    assert inkitt_stories.get("book", book.id)["uploaded"] is True
+
+
+async def test_publish_tool_survives_inkitt_refusing_the_upload(env):
+    import httpx
+
+    owner = make_user()
+    book = make_book(owner_id=owner.id)
+    request = httpx.Request("POST", "https://mcp-server.inkitt.com/mcp")
+    too_large = httpx.HTTPStatusError("413", request=request,
+                                      response=httpx.Response(413, request=request))
+
+    @asynccontextmanager
+    async def failing():
+        raise ExceptionGroup("task group", [ExceptionGroup("inner", [too_large])])
+        yield
+
+    out = json.loads(await agent_tools._publish_tool(failing, book.id, owner.id).ainvoke(PUBLISH_ARGS))
+    assert out == {"error": "Inkitt refused the upload as too large (HTTP 413)."}
+
+
+def test_genre_pair_falls_back():
+    settings = {"settings": {"genres": GENRES}}
+    pair = inkitt.genre_pair(settings, "fantasy", "dark")
+    assert (pair["main_genre_id"], pair["sub_genre_id"]) == (2, 20)
+    pair = inkitt.genre_pair(settings, "fantasy", "nonsense")  # unknown sub-genre: "general"
+    assert pair["sub_genre_shortname"] == "general"
+    pair = inkitt.genre_pair(settings, "drama", "")  # no "general": the first one
+    assert pair["sub_genre_shortname"] == "family"
+    pair = inkitt.genre_pair(settings, "nonsense", "epic")  # unknown genre: "other"
+    assert (pair["main_genre_shortname"], pair["sub_genre_shortname"]) == ("other", "essays")
+    assert inkitt.genre_pair({}, "fantasy") is None
+
+
+async def test_metadata_refusal_keeps_the_drafts(env):
+    book = make_book()
+    fake = FakeInkitt(fail={"update_cover"})
+    out = await inkitt.publish_story(fake, inkitt.book_story(book.id), genre="drama")
+    assert out["status"] == "drafts_created" and "update_cover" in out["setup_errors"][0]
 
 
 async def test_publish_reports_inkitt_refusal(env):
@@ -206,10 +314,10 @@ async def test_publish_tool_only_for_owner(env):
     book = make_book(owner_id=owner.id)
     fake = FakeInkitt()
 
-    refused = json.loads(await agent_tools._publish_tool(fake, book.id, other.id).ainvoke({}))
+    refused = json.loads(await agent_tools._publish_tool(connect(fake), book.id, other.id).ainvoke(PUBLISH_ARGS))
     assert "error" in refused and fake.calls == []
 
-    out = json.loads(await agent_tools._publish_tool(fake, book.id, owner.id).ainvoke({}))
+    out = json.loads(await agent_tools._publish_tool(connect(fake), book.id, owner.id).ainvoke(PUBLISH_ARGS))
     assert out["status"] == "drafts_created"
 
 
@@ -245,25 +353,26 @@ async def test_storyline_of_catalog_book_publishable_by_its_creator(env, monkeyp
     monkeypatch.setattr(storylines, "get_storyline_text", lambda sid: _storyline(creator.id, book.id))
     fake = FakeInkitt()
 
-    refused = json.loads(await agent_tools._publish_tool(fake, book.id, other.id, "sl1").ainvoke({}))
+    refused = json.loads(await agent_tools._publish_tool(connect(fake), book.id, other.id, "sl1").ainvoke(PUBLISH_ARGS))
     assert "error" in refused and fake.calls == []
 
-    args = {"story_type": "fanfiction"}
-    out = json.loads(await agent_tools._publish_tool(fake, book.id, creator.id, "sl1").ainvoke(args))
+    args = {**PUBLISH_ARGS, "story_type": "fanfiction"}
+    out = json.loads(await agent_tools._publish_tool(connect(fake), book.id, creator.id, "sl1").ainvoke(args))
     assert out["status"] == "drafts_created" and fake.calls[0][1]["story_type"] == "fanfiction"
     assert out["chapter_titles"] == ["Chapter 1", "Chapter 2: Delhi", "Chapter 3"]
     assert inkitt_stories.get_story_id("storyline", "sl1") == 7
+    assert dict(fake.calls)["update_story"]["ai_assisted"] is True  # storylines are AI-written
     assert inkitt_stories.get_story_id("book", book.id) is None  # the book itself was not sent
 
     # the book chat (no storyline) still refuses: the catalog book is not the user's
-    book_chat = json.loads(await agent_tools._publish_tool(fake, book.id, creator.id).ainvoke({}))
+    book_chat = json.loads(await agent_tools._publish_tool(connect(fake), book.id, creator.id).ainvoke(PUBLISH_ARGS))
     assert "error" in book_chat
 
 
 async def test_unknown_storyline_is_reported(env):
     user = make_user()
     book = make_book(owner_id=user.id)
-    out = json.loads(await agent_tools._publish_tool(FakeInkitt(), book.id, user.id, "sl1").ainvoke({}))
+    out = json.loads(await agent_tools._publish_tool(connect(FakeInkitt()), book.id, user.id, "sl1").ainvoke(PUBLISH_ARGS))
     assert "unknown storyline" in out["error"]
 
 

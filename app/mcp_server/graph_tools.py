@@ -14,7 +14,15 @@ from app.constants import (
     TOOL_MAX_PATH_HOPS,
     TOOL_MAX_RESULTS,
 )
-from app.mcp_server.common import branch_scope, entity_out, relation_out, resolve, short
+from app.mcp_server.common import (
+    CANON_SUMMARIES_NOTE,
+    branch_scope,
+    entity_out,
+    relation_out,
+    resolve,
+    session_storyline,
+    short,
+)
 from app.mcp_server.matching import content_words, match_entities
 from app.repo import communities, graph
 from app.repo.models import Community, GraphEntity, GraphRelation
@@ -162,9 +170,19 @@ def community_out(c: Community, score: float | None = None, chars: int = 1500) -
     return out if score is None else {**out, "score": round(score, 4)}
 
 
-def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
+def search_communities(
+    book_id: str, query: str, limit: int = 5, session_id: str | None = None
+) -> dict[str, Any]:
     """Communities by keyword and meaning. When neither finds anything, the book overview and the
-    largest groups, so a big-picture question always gets the big picture."""
+    largest groups, so a big-picture question always gets the big picture. In a storyline chat
+    the result says the summaries are the original book's."""
+    out = _search_communities(book_id, query, limit)
+    if session_storyline(book_id, session_id) and out["communities"]:
+        out["storyline_note"] = CANON_SUMMARIES_NOTE
+    return out
+
+
+def _search_communities(book_id: str, query: str, limit: int) -> dict[str, Any]:
     branch_scope(book_id)
     everything = communities.list_communities(book_id)
     if not everything:

@@ -453,11 +453,11 @@ def events_involving(
         f"""
         MATCH (e:Event)-[:INVOLVES]->(n:Entity)
         WHERE n.key IN $keys AND e.story_pos >= $pos_from AND {visible(scope, 'e', 'n')}
-        RETURN properties(e), collect(n.key) ORDER BY e.story_pos
+        RETURN properties(e), collect(n.key), e.story_pos AS pos ORDER BY pos
         """,
         {"keys": list(keys), "pos_from": pos_from},
     )
-    return [(GraphEvent.model_validate(_props(e)), found) for e, found in rows]
+    return [(GraphEvent.model_validate(_props(e)), found) for e, found, _ in rows]
 
 
 def relations_involving(

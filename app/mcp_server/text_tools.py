@@ -14,7 +14,7 @@ from app.constants import (
 from app.mcp_server.common import branch_scope, entity_out, resolve, session_storyline
 from app.mcp_server.matching import content_words, score_text, words
 from app.repo import chunks, graph, storylines
-from app.repo.models import Chunk, GraphEvent, Storyline, StorylineChunk
+from app.repo.models import Chunk, GraphEvent, Storyline
 from app.storyline.prose import ChapterView
 
 MAX_CHAPTER_LISTING = 60
@@ -154,6 +154,35 @@ def rank_chunks(
     return [(by_id[i], score, match(i)) for i, score in retrieval.fuse(*rankings)], len(scored)
 
 
+def with_rewrites(
+    sl: Storyline | None,
+    views: _ChapterViews,
+    ranked: list[tuple[Chunk, float, str]],
+    query: str,
+    terms: list[str],
+    chapter: str | None = None,
+) -> tuple[list[tuple[Chunk, float, str]], set[str]]:
+    """`ranked` as the storyline reads: a current rewritten chapter replaces the original text of
+    that chapter, its matches ranked first. Also returns the rewritten passages' ids."""
+    if not sl:
+        return ranked, set()
+    rewritten = {
+        p.chapter: p
+        for p in storylines.list_passages(sl.id)
+        if p.fingerprint == views[p.chapter].fingerprint
+    }
+    phrase = " ".join(words(query))
+    mine = [
+        (p.as_chunk(), score_text(p.text, terms, phrase), "keyword")
+        for t, p in rewritten.items()
+        if chapter in (None, t) and terms
+    ]
+    ranked = [m for m in sorted(mine, key=lambda r: -r[1]) if m[1]] + [
+        r for r in ranked if r[0].chapter not in rewritten
+    ]
+    return ranked, {p.id for p in rewritten.values()}
+
+
 def search_chunks(
     book_id: str,
     query: str,
@@ -169,24 +198,8 @@ def search_chunks(
     title = resolve_chapter(book_id, chapter)["title"] if chapter else None
     ranked, keyword_matches = rank_chunks(book_id, query, title, query_vec)
     views = _ChapterViews(sl)
-    rewritten: dict[str, StorylineChunk] = {}
-    if sl:  # a current rewritten chapter replaces the original text of that chapter
-        rewritten = {
-            p.chapter: p
-            for p in storylines.list_passages(sl.id)
-            if p.fingerprint == views[p.chapter].fingerprint
-        }
-        phrase = " ".join(words(query))
-        mine = [
-            (p.as_chunk(), score_text(p.text, terms, phrase), "keyword")
-            for t, p in rewritten.items()
-            if title in (None, t) and terms
-        ]
-        ranked = [m for m in sorted(mine, key=lambda r: -r[1]) if m[1]] + [
-            r for r in ranked if r[0].chapter not in rewritten
-        ]
+    ranked, rewritten_ids = with_rewrites(sl, views, ranked, query, terms, title)
     top = ranked[: min(max(limit, 1), TOOL_MAX_RESULTS)]
-    rewritten_ids = {p.id for p in rewritten.values()}
     return {
         "results": [
             {**chunk_ref(c), "score": round(score, 4), "match": how, "snippet": snippet(c.text, terms),
