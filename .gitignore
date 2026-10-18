@@ -34,3 +34,11 @@ Thumbs.db
 
 # Local scratch scripts and outputs
 temp/
+
+# Logs
+logs/
+*.log
+
+# Test coverage output
+.coverage
+htmlcov/

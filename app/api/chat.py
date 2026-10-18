@@ -5,6 +5,7 @@ Signing in is optional. A session opened while signed in belongs to that user: o
 in it, and its agent can use their Inkitt account. Anonymous sessions are open to anyone.
 """
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +18,7 @@ from app.repo.models import ChatSession, User
 
 router = APIRouter(tags=["chat"])
 AGENT = "book_qa"
+log = logging.getLogger(__name__)
 
 
 class NewSession(BaseModel):
@@ -36,6 +38,7 @@ def create_session(
     session = sessions.create_session(
         ChatSession(book_id=body.book_id, user_id=user.id if user else None)
     )
+    log.info("chat session created session=%s book=%s", session.id, session.book_id)
     return {"session_id": session.id, "book_id": session.book_id}
 
 

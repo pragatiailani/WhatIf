@@ -97,11 +97,15 @@ Open or resume a session (`thread_id`), then save the user message. If the histo
 | Graph | `find_entities`, `get_neighbors` (1-2 hops), `find_path`, `get_relations` (by type), `search_communities` |
 | Text | `get_chunks`, `search_chunks`, `get_chapter_summary`, `get_timeline` |
 | Session | `get_history`, `get_session_summary`, `save_note` |
+| Storyline (read) | `get_dependents`, `get_state_at`, `read_chapter` |
+| Storyline (draft) | `start_draft`, `get_open_items`, `resolve_item`, `verify_draft`, `commit_draft`, `discard_draft`, `generate_passage` |
 
 Agents live in `app/agents` and are looked up by name: `await get_agent("book_qa").run(book_id, session_id, question)`.
-`book_qa` is a single ReAct agent (`langchain.agents.create_agent`) bound to these tools. The conversation is
+`book_qa` is the one agent behind every chat: a single ReAct agent (`langchain.agents.create_agent`) bound to all of these tools plus its planning tools (`write_todos`, `read_todos`, `think_tool`). The conversation is
 checkpointed to MongoDB (`checkpoints`, `checkpoint_writes`), one thread per chat session, and older turns are
 summarised past `CHAT_HISTORY_BUDGET`. Each question and answer is also saved to `messages` with its citations.
+**What-if editing.** The same agent handles it, in the same chat, when the reader asks for a change: no mode to pick and no hand-off. `start_draft` queues every later event and relation involving the changed characters (the ripple queue); `resolve_item` keeps, hides or rewrites each one and can pull more characters in; `verify_draft` runs code checks plus an LLM continuity check per chapter; `commit_draft` is refused unless the latest verification passed on the current draft, and it also writes the new text of every chapter the change touched (a few at a time; a chapter that fails is written the next time it is read), so one approval updates both the story record and the chapters. The reading page shows the start of the first rewritten chapter. Ops are logged in `storyline_ops`; storyline graph items carry `sid` and `created_by_op`, and hidden items come from the op log.
+
 Graph and text tools take `book_id`, session tools take `session_id`. The inference graph fills these
 in from the user's session; the LLM never picks them.
 
@@ -186,7 +190,7 @@ See `docs/schema.md` for the full field-level schema.
 whatif/
 ├── app/
 │   ├── api/              # REST/streaming endpoints
-│   ├── agents/           # agent registry + LangGraph agents (book_qa), MCP tool binding
+│   ├── agents/           # agent registry + LangGraph agents (whatif), MCP tool binding
 │   ├── graphs/           # LangGraph: ingestion, storyline
 │   ├── extraction/       # prompts, parsers, evidence matching
 │   ├── merge/            # pairing, entity resolution, merge
@@ -297,6 +301,21 @@ FalkorDB Browser runs at http://localhost:3000. Connect with host `localhost`, p
 | `CHAT_HISTORY_BUDGET` | Token limit before rolling summary | `6000` |
 | `MCP_SERVER_URL` | Streamable-HTTP URL of the tool server; empty runs it over stdio for each question | empty |
 | `STORYLINE_COPY_THRESHOLD` | Op count before copy mode | `500` |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING` or `ERROR` | `INFO` |
+| `LOG_FILE` | Also write logs to this rotating file (empty: console only) | empty |
+
+---
+
+## Logging
+
+All backend logs go to stderr (and to `LOG_FILE` if set) in one format:
+`time LEVEL logger [request-id] message`. Set `LOG_LEVEL=DEBUG` to also see graph queries and per-node merge steps.
+
+- **Requests:** one line each with status and duration (`app.request`). Every response carries an `X-Request-ID`; quote it when reporting a problem. Background work started by a request (ingestion) keeps its id.
+- **Ingestion, merge, storylines, agent:** stage changes, counts and timings (`app.ingestion`, `app.merge.*`, `app.storyline.*`, `app.agents.book_qa`), plus a line per agent tool call (`app.agent.tools`) and per model call with tokens (`app.llm`).
+- **Tool server:** runs as its own process and logs to stderr, which shows up in the API's console; it records tracebacks for crashes (`app.mcp`).
+- **Never logged:** passwords, tokens, API keys, emails, prompts or book text. Long argument values are clipped.
+
 ## Cross-session user memory
 
 Signed-in users can retain explicit preferences and useful context across chat sessions. Memories
@@ -315,12 +334,3 @@ are never injected into the answer prompt. Memories can be global, book-scoped, 
 Authenticated endpoints (send the normal `Authorization: Bearer <token>` header):
 
 - `GET /me/memories` — list active memories.
-- `PUT /me/memories/{memory_id}` with `{"key":"answer_style","value":"concise answers"}` — correct a memory.
-- `DELETE /me/memories/{memory_id}` — delete one memory.
-- `DELETE /me/memories` — delete all active and pending memories.
-
-`POST /sessions/{session_id}/chat` returns `memory_updates` as a separate metadata array, alongside
-`answer`, `citations`, `trace`, and `actions`. Memory values are not concatenated into the answer.
-Memories are personalization hints, not evidence about book content; book claims must still be
-grounded in the existing retrieval tools and citations.
-

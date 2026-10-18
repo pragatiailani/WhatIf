@@ -8,6 +8,7 @@ A page the provider refuses (content filter) is saved with an empty graph: retry
 one blocked page must not stop the book from merging.
 """
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -21,6 +22,8 @@ from app.llm import get_chat_model
 from app.repo import chunks as chunk_repo
 from app.repo import graph_levels, mentions
 from app.repo.models import Chunk
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,6 +75,8 @@ def generate_page_graphs(
         else:
             todo.append(chunk)
 
+    log.info("extraction book=%s pages=%d todo=%d skipped=%d batch_size=%d",
+             book_id, len(pages), len(todo), len(report.skipped), batch_size)
     for start in range(0, len(todo), batch_size):
         batch = todo[start : start + batch_size]
         results = structured.batch(
@@ -83,12 +88,15 @@ def generate_page_graphs(
             if isinstance(result, BaseException) and is_blocked(result):
                 save_page_graph(chunk, build_page_graph(chunk, ChunkExtraction()))
                 report.blocked.append(chunk.seq)
+                log.warning("page refused by the content filter book=%s page_seq=%d", book_id, chunk.seq)
                 continue
             if isinstance(result, BaseException) or result is None:
                 report.failed[chunk.seq] = repr(result) if result is not None else "empty response"
+                log.warning("page extraction failed book=%s page_seq=%d: %s", book_id, chunk.seq, report.failed[chunk.seq])
                 continue
             page = build_page_graph(chunk, result)
             save_page_graph(chunk, page)
             report.done.append(chunk.seq)
             report.dropped += page.dropped
+        log.debug("extraction batch done book=%s pages=%d-%d", book_id, batch[0].seq, batch[-1].seq)
     return report

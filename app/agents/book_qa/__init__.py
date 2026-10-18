@@ -13,6 +13,8 @@ graph relations it rests on.
 """
 
 import json
+import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,6 +27,8 @@ from langgraph.types import Checkpointer
 
 from app.agents.book_qa.explain import explain as explain_answer
 from app.agents.book_qa.prompt import SYSTEM_PROMPT
+from app.agents.logging_mw import ToolCallLogger
+from app.agents.planning import PlanningMiddleware
 from app.memory.service import build_memory_context, extract_and_update_memory
 from app.agents.registry import register_agent
 from app.agents.tools import CONNECT_INKITT, open_tools, tool_text
@@ -39,12 +43,21 @@ from app.constants import (
     TRACE_TEXT_CHARS,
 )
 from app.llm import get_chat_model
-from app.repo import sessions
+from app.repo import sessions, storylines
 from app.repo.checkpoints import get_checkpointer
-from app.repo.models import Message
+from app.repo.models import Message, utcnow
+from app.storyline.diff import diff_out
 
 NAME = "book_qa"
-CITING_TOOLS = {"get_chunks": "chunks", "search_chunks": "results", "retrieve": "passages"}
+log = logging.getLogger(__name__)
+# Tools whose results hold passages to cite, and the result field they are in. A rewritten chapter
+# from read_chapter is a single passage at the top level of its result (field None).
+CITING_TOOLS = {"get_chunks": "chunks", "search_chunks": "results", "retrieve": "passages",
+                "read_chapter": None}  # fmt: skip
+EDIT_TOOLS = frozenset(
+    {"start_draft", "resolve_item", "verify_draft", "commit_draft", "discard_draft", "generate_passage"}
+)
+BIG_PICTURE_TOOLS = frozenset({"search_communities", "get_chapter_summary"})
 # Set in a turn's `actions` when the UI should ask the user for their Inkitt token.
 INKITT_TOKEN_REQUIRED = "inkitt_token_required"
 # What the UI shows while a tool runs. Tools not listed show DEFAULT_PHASE.
@@ -62,6 +75,19 @@ PHASES = {
     "save_note": "Saving your note…",
     "connect_inkitt": "Checking your Inkitt connection…",
     "publish_to_inkitt": "Sending the story to Inkitt…",
+    "read_chapter": "Reading the chapter…",
+    "get_dependents": "Seeing what depends on it…",
+    "get_state_at": "Checking where everyone stands…",
+    "start_draft": "Starting the alternate version…",
+    "get_open_items": "Checking what is left to decide…",
+    "resolve_item": "Updating the story…",
+    "verify_draft": "Checking the story still holds together…",
+    "commit_draft": "Saving the new version…",
+    "discard_draft": "Discarding the draft…",
+    "generate_passage": "Writing the chapter…",
+    "write_todos": "Planning the work…",
+    "read_todos": "Checking the plan…",
+    "think_tool": "Thinking it through…",
 }
 DEFAULT_PHASE = "Working…"
 FIRST_PHASE = "Reading your question…"
@@ -72,7 +98,7 @@ def build_agent(
     llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None,
     system_prompt: str = SYSTEM_PROMPT,
 ):
-    """The ReAct agent around `llm`, tools, and per-request system context."""
+    """The ReAct agent around `llm` and already-bound `tools` and per-request system context, plus the planning tools."""
     return create_agent(
         llm,
         tools,
@@ -84,6 +110,8 @@ def build_agent(
                 keep=("messages", HISTORY_KEEP_MESSAGES),
             ),
             ModelCallLimitMiddleware(run_limit=MAX_MODEL_CALLS),
+            PlanningMiddleware(),
+            ToolCallLogger(),
         ],
         checkpointer=checkpointer,
     )
@@ -105,12 +133,15 @@ def _json(text: str) -> dict:
 
 def _citations_from(tool: str, text: str) -> list[dict]:
     """Chunk references (id, chapter, pages, a short quote) from a passage-returning tool."""
-    items = _json(text).get(CITING_TOOLS[tool], [])
+    data, field = _json(text), CITING_TOOLS[tool]
+    items = data.get(field, []) if field else ([data] if data.get("source") == "storyline" else [])
     out = []
     for i in items:
         if not isinstance(i, dict) or not i.get("chunk_id"):
             continue
         ref = {k: i.get(k) for k in ("chunk_id", "chapter", "page_start", "page_end", "seq")}
+        if field is None:  # a chapter the storyline rewrote: cited as text it wrote, not as a page
+            ref["storyline_chunk"] = True
         quote = " ".join(str(i.get("snippet") or i.get("text") or "").split())
         ref["quote"] = quote[:CITATION_QUOTE_CHARS] + ("…" if len(quote) > CITATION_QUOTE_CHARS else "")
         out.append(ref)
@@ -129,6 +160,11 @@ def _graph_refs_from(tool: str, text: str, refs: dict[str, list]) -> None:
     if tool == "get_neighbors":
         refs["seeds"] += [data["entity"]["key"]] if "key" in data.get("entity", {}) else []
         refs["expanded"] += [n["entity"]["key"] for n in data.get("neighbors", [])]
+    if tool in ("get_relations", "get_timeline"):
+        refs["seeds"] += [data["entity"]["key"]] if "key" in data.get("entity", {}) else []
+        refs["expanded"] += [
+            r["other"]["key"] for r in data.get("relations", []) if isinstance(r.get("other"), dict)
+        ]
     if tool in ("retrieve", "search_communities"):
         refs["communities"] += [c["cid"] for c in data.get("communities", []) if "cid" in c]
 
@@ -237,7 +273,7 @@ def _tool_names(chunk: Any) -> list[str]:
     return [c["name"] for c in calls if c.get("name")]
 
 
-async def stream(
+async def _stream(
     book_id: str,
     session_id: str,
     question: str,
@@ -258,6 +294,8 @@ async def stream(
         raise ValueError(f"unknown session '{session_id}' for book '{book_id}'")
     if checkpointer is ...:
         checkpointer = get_checkpointer()
+    head_before = _head_seq(session.storyline_id)  # with the time, tells what this turn changed
+    turn_started = utcnow()
 
     memory_context = build_memory_context(session.user_id, book_id, session.storyline_id)
     system_prompt = SYSTEM_PROMPT
@@ -308,10 +346,14 @@ async def stream(
     if session.user_id and any(t["tool"] == CONNECT_INKITT for t in trace):
         actions.append(INKITT_TOKEN_REQUIRED)
 
+    # An edit may have bound this chat to a storyline (start_draft creates one): look it up again.
+    session = sessions.get_session(session_id) or session
+    line = storylines.get_storyline(session.storyline_id) if session.storyline_id else None
+    diff = diff_out(line, head_before, turn_started) if line else None
     user_msg = sessions.add_message(Message(session_id=session_id, role="user", content=question))
     assistant_msg = sessions.add_message(
         Message(session_id=session_id, role="assistant", content=answer, citations=citations,
-                trace=trace, graph_refs=refs, reasoning=reasoning)
+                trace=trace, graph_refs=refs, reasoning=reasoning, route=route_of(trace), diff=diff)
     )  # fmt: skip
     if session.title is None:
         sessions.set_title(session_id, question[:TITLE_CHARS])
@@ -332,8 +374,50 @@ async def stream(
         "memory_updates": memory_updates,
         "user_message": user_msg,
         "assistant_message": assistant_msg,
+        "storyline_id": line.id if line else None,
     }
 
+
+
+def _head_seq(storyline_id: str | None) -> int:
+    line = storylines.get_storyline(storyline_id) if storyline_id else None
+    return line.head_seq if line else 0
+
+
+def route_of(trace: list[dict]) -> str:
+    """How a turn was answered: `edit` if it used the draft tools, `global` for big-picture
+    lookups, else `local`."""
+    tools = {t["tool"] for t in trace}
+    if tools & EDIT_TOOLS:
+        return "edit"
+    return "global" if tools & BIG_PICTURE_TOOLS else "local"
+
+
+async def stream(
+    book_id: str,
+    session_id: str,
+    question: str,
+    *,
+    llm: BaseChatModel | None = None,
+    checkpointer: Checkpointer = ...,
+) -> AsyncIterator[tuple[str, Any]]:
+    """`_stream`, with a log line when a message arrives, when the reply is ready and if it fails."""
+    log.info("message received session=%s book=%s chars=%d", session_id, book_id, len(question))
+    started = time.perf_counter()
+    try:
+        async for kind, value in _stream(book_id, session_id, question, llm=llm, checkpointer=checkpointer):
+            if kind == "done":
+                log.info(
+                    "reply ready session=%s in %.1fs tool_calls=%d citations=%d chars=%d route=%s",
+                    session_id, time.perf_counter() - started, len(value["trace"]),
+                    len(value["citations"]), len(value["answer"]), value["assistant_message"].route,
+                )
+                if not value["answer"]:
+                    log.warning("agent returned no answer session=%s (call limit reached?)", session_id)
+            yield kind, value
+    except Exception:
+        log.exception("agent failed session=%s after %.1fs", session_id, time.perf_counter() - started)
+        raise
 
 @register_agent(NAME, "Answers questions about a book with citations, using the MCP tools")
 async def run(

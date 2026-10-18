@@ -105,7 +105,7 @@ async def test_answers_with_citations_and_saves_messages(env):
     assert sessions.get_session(s.id).title == "Why did Ravi leave?"
     # the model saw the tool result and the system prompt
     assert "because of the debt" in str(llm.seen[1][-1].content)
-    assert "only from what the tools return" in llm.seen[0][0].content
+    assert "never use outside knowledge of the book" in llm.seen[0][0].content
 
 
 async def test_conversation_memory_is_per_session_thread(env):
@@ -144,7 +144,7 @@ async def test_unknown_session_or_wrong_book(env):
 
 
 def test_registry():
-    assert [a.name for a in agents.list_agents()] == ["book_qa"]
+    assert [a.name for a in agents.list_agents()] == ["book_qa"]  # one agent behind every chat
     assert agents.get_agent("book_qa").run is book_qa.run
     with pytest.raises(KeyError, match="available: book_qa"):
         agents.get_agent("nope")
@@ -164,6 +164,7 @@ async def test_open_tools_over_stdio_hides_ids(env):
     async with open_tools("b1", "s1") as tools:
         by_name = {t.name: t for t in tools}
     assert "get_history" not in by_name and "find_entities" in by_name
+    assert {"start_draft", "resolve_item", "verify_draft", "commit_draft", "read_chapter"} <= set(by_name)
     for tool in tools:
         assert not {"book_id", "session_id"} & set(tool.args_schema["properties"])
 
@@ -283,3 +284,29 @@ def test_explain_without_facts_or_on_failure_is_none(monkeypatch):
     broken = fake()  # no reply queued: the call raises
     facts = [{"relations": [{"id": "r1", "src_key": "a", "dst_key": "b", "rel": "KNOWS"}]}]
     assert asyncio.run(ex.explain(broken, "b", "q", "a", facts)) is None
+
+
+async def test_one_agent_has_the_mcp_tools_and_the_planning_tools():
+    graph = book_qa.build_agent(fake(), make_tools())
+    tool_names = {t.name for t in graph.nodes["tools"].bound.tools_by_name.values()}
+    assert {"get_chunks", "write_todos", "read_todos", "think_tool"} <= tool_names
+
+
+def test_a_rewritten_chapter_is_cited_but_an_original_one_is_not():
+    rewritten = json.dumps({"source": "storyline", "chunk_id": "p1", "chapter": "Chapter 3",
+                            "page_start": 3, "page_end": 4, "text": "..."})  # fmt: skip
+    original = json.dumps({"source": "original", "chapter": "Chapter 1", "chunk_ids": ["a"]})
+    assert book_qa._citations_from("read_chapter", rewritten) == [
+        {"chunk_id": "p1", "chapter": "Chapter 3", "page_start": 3, "page_end": 4, "seq": None,
+         "storyline_chunk": True, "quote": "..."}  # fmt: skip
+    ]
+    assert book_qa._citations_from("read_chapter", original) == []
+
+def test_route_follows_the_tools_used():
+    assert book_qa.route_of([{"tool": "find_entities"}, {"tool": "get_chunks"}]) == "local"
+    assert book_qa.route_of([{"tool": "search_communities"}]) == "global"
+    assert book_qa.route_of([{"tool": "get_chapter_summary"}, {"tool": "get_chunks"}]) == "global"
+    assert book_qa.route_of([{"tool": "find_entities"}, {"tool": "start_draft"}]) == "edit"
+    assert book_qa.route_of([{"tool": "generate_passage"}]) == "edit"
+    assert book_qa.route_of([]) == "local"
+

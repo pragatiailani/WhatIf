@@ -18,18 +18,24 @@ from app.constants import (
     RETRIEVE_SEEDS,
     TOOL_MAX_CHUNKS_PER_CALL,
 )
-from app.mcp_server.common import canon_scope, entity_out, short
+from app.mcp_server.common import branch_scope, entity_out, session_storyline, short
 from app.mcp_server.graph_tools import community_out
 from app.mcp_server.matching import content_words, match_entities
-from app.mcp_server.text_tools import chunk_ref, event_out, rank_chunks, snippet
-from app.repo import chunks, communities, graph, mentions
+from app.mcp_server.text_tools import (
+    _ChapterViews,
+    chunk_ref,
+    event_out,
+    rank_chunks,
+    snippet,
+    superseded_note,
+)
+from app.repo import GraphScope, chunks, communities, graph, mentions
 
 MENTIONS_PER_SEED = 20
 
 
-def _seeds(book_id: str, query: str, query_vec: Any) -> list[tuple[str, str]]:
+def _seeds(book_id: str, scope: GraphScope, query: str, query_vec: Any) -> list[tuple[str, str]]:
     """(entity key, how it matched) for the entities the query is about, best first."""
-    scope = canon_scope(book_id)
     by_name = [f["key"] for f in match_entities(query, graph.entity_index(scope), RETRIEVE_SEEDS)]
     by_meaning = [k for k, _ in retrieval.semantic(book_id, "entity", query_vec, RETRIEVE_SEEDS * 2)]
     named, meant = set(by_name), set(by_meaning)
@@ -49,12 +55,16 @@ def _mention_ranking(book_id: str, seed_keys: list[str]) -> list[str]:
     return sorted(counts, key=lambda c: (-counts[c], order[c]))
 
 
-def retrieve(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
-    scope = canon_scope(book_id)
+def retrieve(
+    book_id: str, query: str, limit: int = 5, session_id: str | None = None
+) -> dict[str, Any]:
+    scope = branch_scope(book_id, session_id)
+    sl = session_storyline(book_id, session_id)
+    views = _ChapterViews(sl)
     limit = min(max(limit, 1), TOOL_MAX_CHUNKS_PER_CALL)
     query_vec = retrieval.embed_query(query)
 
-    seeds = _seeds(book_id, query, query_vec)
+    seeds = _seeds(book_id, scope, query, query_vec)
     seed_keys = [k for k, _ in seeds]
     found = {e.key: e for e in graph.get_entities(scope, seed_keys)}
     names = {k: e.name for k, e in found.items()}
@@ -93,7 +103,8 @@ def retrieve(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
         ] if seed_keys else [],
         "events": [event_out(e, seq_ids) for e in events],
         "passages": [
-            {**chunk_ref(c), "match": how, "text": snippet(c.text, terms, RETRIEVE_PASSAGE_CHARS)}
+            {**chunk_ref(c), "match": how, "text": snippet(c.text, terms, RETRIEVE_PASSAGE_CHARS),
+             **superseded_note(sl, views, c, set())}
             for c, _, how in ranked[:limit]
         ],
         "semantic": query_vec is not None,

@@ -166,7 +166,8 @@ async def _inkitt_tools(
 async def open_tools(
     book_id: str, session_id: str, user_id: str | None = None, storyline_id: str | None = None
 ) -> AsyncIterator[list[BaseTool]]:
-    """The agent's tools for one question. Server connections are held while it runs."""
+    """The agent's tools for one question: every MCP tool except `AGENT_EXCLUDED_TOOLS`, plus the
+    Inkitt tools when the user has connected an account. Server connections are held while it runs."""
     client = MultiServerMCPClient({SERVER_NAME: _connection(get_settings())})
     values = {"book_id": book_id, "session_id": session_id}
     async with AsyncExitStack() as stack:

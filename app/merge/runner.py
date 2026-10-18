@@ -20,6 +20,8 @@ The tree shape depends on the chunk count: delete levels >= 1 after re-chunking 
 """
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -47,6 +49,7 @@ from app.repo import chunks as chunk_repo
 from app.repo.models import GraphLevel, GraphPayload
 
 NodeId = tuple[int, int]  # (level, index)
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -117,6 +120,7 @@ class _Merger:
             return saved
         if level == 0:
             self.report.failed[(level, index)] = "no level-0 graph"
+            log.error("merge needs a level-0 graph book=%s page=%s", self.book_id, index)
             raise _SubtreeFailed
 
         left_id, right_id = children(level, index, self.n_chunks)
@@ -128,6 +132,7 @@ class _Merger:
             graph = await self._merge(*kids) if len(kids) == 2 else _payload(kids[0])
         except Exception as exc:
             self.report.failed[(level, index)] = repr(exc)
+            log.error("merge node failed book=%s node=%s: %r", self.book_id, (level, index), exc)
             raise _SubtreeFailed from exc
 
         first, last = kids[0], kids[-1]
@@ -144,6 +149,7 @@ class _Merger:
         )
         graph_levels.save_level_graph(node)
         self.report.merged.append((level, index))
+        log.debug("merged node book=%s node=%s pages=%s-%s", self.book_id, (level, index), node.page_start, node.page_end)
         return node
 
     def _with_chunk_refs(self, leaf: GraphLevel) -> GraphLevel:
@@ -196,6 +202,7 @@ class _Merger:
                 if not is_blocked(exc):
                     raise
                 self.report.blocked_calls += 1
+                log.warning("merge call refused by the content filter book=%s", self.book_id)
                 return None
         if result is None:
             raise ValueError("empty LLM response")
@@ -319,15 +326,26 @@ async def amerge_page_graphs(
 
     if embeddings is None:
         embeddings = get_embeddings()
+    log.info("merge started book=%s pages=%d concurrency=%d embeddings=%s",
+             book_id, n_chunks, concurrency, bool(embeddings))
+    started = time.perf_counter()
     merger = _Merger(book_id, n_chunks, llm or get_chat_model(), embeddings or None, concurrency)
     root_id = (tree_height(n_chunks), 0)
     try:
         root = await merger.build(*root_id)
     except _SubtreeFailed:
+        log.warning("merge incomplete book=%s failed_nodes=%d", book_id, len(merger.report.failed))
         return merger.report
     merger.report.root = root_id
     if describe:
         await merger.describe(root)
+        for error in merger.report.description_errors:
+            log.warning("final description batch failed book=%s: %s", book_id, error)
+    r = merger.report
+    log.info("merge finished book=%s merged=%d skipped=%d same_by_code=%d same_by_llm=%d llm_calls=%d "
+             "blocked=%d described=%d in %.1fs", book_id, len(r.merged), len(r.skipped),
+             r.same_by_code, r.same_by_llm, r.llm_calls, r.blocked_calls, r.described,
+             time.perf_counter() - started)
     return merger.report
 
 
