@@ -11,10 +11,11 @@ from app.constants import (
     TOOL_MAX_TIMELINE_EVENTS,
     TOOL_SNIPPET_CHARS,
 )
-from app.mcp_server.common import canon_scope, entity_out, resolve
+from app.mcp_server.common import branch_scope, entity_out, resolve, session_storyline
 from app.mcp_server.matching import content_words, score_text, words
-from app.repo import chunks, graph
-from app.repo.models import Chunk, GraphEvent
+from app.repo import chunks, graph, storylines
+from app.repo.models import Chunk, GraphEvent, Storyline, StorylineChunk
+from app.storyline.prose import ChapterView
 
 MAX_CHAPTER_LISTING = 60
 
@@ -34,15 +35,47 @@ def chunk_ref(chunk: Chunk) -> dict[str, Any]:
     }
 
 
-def get_chunks(book_id: str, chunk_ids: list[str]) -> dict[str, Any]:
-    canon_scope(book_id)
+class _ChapterViews:
+    """A storyline's chapters compared with canon, each built at most once per call."""
+
+    def __init__(self, sl: Storyline | None):
+        self.sl = sl
+        self._views: dict[str, ChapterView] = {}
+
+    def __getitem__(self, chapter: str) -> ChapterView:
+        if chapter not in self._views:
+            self._views[chapter] = ChapterView(self.sl, chapter)
+        return self._views[chapter]
+
+
+def superseded_note(sl: Storyline | None, views: _ChapterViews, chunk: Chunk, rewritten: set[str]) -> dict[str, str]:
+    """`{"superseded": ...}` for an original passage of a chapter the storyline changed: its text
+    no longer reads that way. Nothing for canon, for unchanged chapters and for rewritten ones."""
+    if sl and chunk.id not in rewritten and chunk.chapter and views[chunk.chapter].changed:
+        return {"superseded": "this chapter was changed in the storyline; use read_chapter"}
+    return {}
+
+
+def get_chunks(
+    book_id: str, chunk_ids: list[str], session_id: str | None = None
+) -> dict[str, Any]:
+    sl = session_storyline(book_id, session_id)
     if len(chunk_ids) > TOOL_MAX_CHUNKS_PER_CALL:
         raise ValueError(f"ask for at most {TOOL_MAX_CHUNKS_PER_CALL} chunks per call")
-    found = [c for c in chunks.get_chunks(chunk_ids) if c.book_id == book_id]
-    got = {c.id for c in found}
+    by_id = {c.id: c for c in chunks.get_chunks(chunk_ids) if c.book_id == book_id}
+    rewritten: set[str] = set()
+    if sl:  # ids the original text does not have may be this storyline's rewritten chapters
+        passages = storylines.get_passages(sl.id, [i for i in chunk_ids if i not in by_id])
+        rewritten = {p.id for p in passages}
+        by_id |= {p.id: p.as_chunk() for p in passages}
+    views = _ChapterViews(sl)
     return {
-        "chunks": [{**chunk_ref(c), "text": c.text} for c in found],
-        "missing": [i for i in chunk_ids if i not in got],
+        "chunks": [
+            {**chunk_ref(by_id[i]), "text": by_id[i].text, **superseded_note(sl, views, by_id[i], rewritten)}
+            for i in chunk_ids
+            if i in by_id
+        ],
+        "missing": [i for i in chunk_ids if i not in by_id],
     }
 
 
@@ -59,7 +92,7 @@ def _chapters(book_id: str) -> list[dict[str, Any]]:
     return chunks.list_chapters(book_id)
 
 
-def _resolve_chapter(book_id: str, name: str) -> dict[str, Any]:
+def resolve_chapter(book_id: str, name: str) -> dict[str, Any]:
     """Match a chapter by exact title, by number ('3' -> 'Chapter 3'), then by substring."""
     chapters = _chapters(book_id)
     wanted = name.strip().lower()
@@ -122,19 +155,42 @@ def rank_chunks(
 
 
 def search_chunks(
-    book_id: str, query: str, chapter: str | None = None, limit: int = 5
+    book_id: str,
+    query: str,
+    chapter: str | None = None,
+    limit: int = 5,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
-    canon_scope(book_id)
+    sl = session_storyline(book_id, session_id)
     query_vec = retrieval.embed_query(query)
     terms = list(dict.fromkeys(content_words(query)))
     if not terms and query_vec is None:
         raise ValueError("query has no searchable words")
-    title = _resolve_chapter(book_id, chapter)["title"] if chapter else None
+    title = resolve_chapter(book_id, chapter)["title"] if chapter else None
     ranked, keyword_matches = rank_chunks(book_id, query, title, query_vec)
+    views = _ChapterViews(sl)
+    rewritten: dict[str, StorylineChunk] = {}
+    if sl:  # a current rewritten chapter replaces the original text of that chapter
+        rewritten = {
+            p.chapter: p
+            for p in storylines.list_passages(sl.id)
+            if p.fingerprint == views[p.chapter].fingerprint
+        }
+        phrase = " ".join(words(query))
+        mine = [
+            (p.as_chunk(), score_text(p.text, terms, phrase), "keyword")
+            for t, p in rewritten.items()
+            if title in (None, t) and terms
+        ]
+        ranked = [m for m in sorted(mine, key=lambda r: -r[1]) if m[1]] + [
+            r for r in ranked if r[0].chapter not in rewritten
+        ]
     top = ranked[: min(max(limit, 1), TOOL_MAX_RESULTS)]
+    rewritten_ids = {p.id for p in rewritten.values()}
     return {
         "results": [
-            {**chunk_ref(c), "score": round(score, 4), "match": how, "snippet": snippet(c.text, terms)}
+            {**chunk_ref(c), "score": round(score, 4), "match": how, "snippet": snippet(c.text, terms),
+             **superseded_note(sl, views, c, rewritten_ids)}
             for c, score, how in top
         ],
         "total_matches": keyword_matches,
@@ -155,8 +211,8 @@ def event_out(event: GraphEvent, chunk_ids: dict[int, str]) -> dict[str, Any]:
     }
 
 
-def get_timeline(book_id: str, entity: str) -> dict[str, Any]:
-    scope = canon_scope(book_id)
+def get_timeline(book_id: str, entity: str, session_id: str | None = None) -> dict[str, Any]:
+    scope = branch_scope(book_id, session_id)
     found = resolve(scope, entity)
     rows = graph.entity_events(scope, found["key"])
     shown = rows[:TOOL_MAX_TIMELINE_EVENTS]
@@ -169,10 +225,12 @@ def get_timeline(book_id: str, entity: str) -> dict[str, Any]:
     }
 
 
-def get_chapter_summary(book_id: str, chapter: str) -> dict[str, Any]:
+def get_chapter_summary(
+    book_id: str, chapter: str, session_id: str | None = None
+) -> dict[str, Any]:
     """The chapter's span plus its events and main entities, for the agent to summarise."""
-    scope = canon_scope(book_id)
-    info = _resolve_chapter(book_id, chapter)
+    scope = branch_scope(book_id, session_id)
+    info = resolve_chapter(book_id, chapter)
     rows = graph.chapter_events(scope, info["title"])
     shown = rows[:TOOL_MAX_TIMELINE_EVENTS]
 

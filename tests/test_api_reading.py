@@ -163,7 +163,7 @@ def test_ask_errors(client, monkeypatch):
     assert client.post(f"/books/{b.id}/chat", json={"text": "hi"}).status_code == 401
     assert client.post(f"/books/{b.id}/chat", json={"text": ""}, headers=h).status_code == 422
     assert client.post(f"/books/{b.id}/chat", json={"text": "hi", "storyline_id": "s1"},
-                       headers=h).status_code == 400
+                       headers=h).status_code == 404  # no such storyline
     assert client.post(f"/books/{book(status='extracting').id}/chat", json={"text": "hi"},
                        headers=h).status_code == 409
 

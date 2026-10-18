@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from app.repo import users
 from app.repo.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = logging.getLogger(__name__)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -81,7 +83,9 @@ def sign_up(body: SignUp) -> SessionOut:
     try:
         users.create_user(user)
     except users.EmailTaken as exc:
+        log.info("signup rejected: email already registered")
         raise HTTPException(409, "An account with that email already exists.") from exc
+    log.info("signup user=%s", user.id)
     return _session(user)
 
 
@@ -89,7 +93,9 @@ def sign_up(body: SignUp) -> SessionOut:
 def sign_in(body: SignIn) -> SessionOut:
     user = users.find_by_email(body.email.strip().lower())
     if user is None or not verify_password(body.password, user.password_hash):
+        log.warning("signin failed: %s", "unknown email" if user is None else "wrong password")
         raise HTTPException(401, "Email or password is incorrect.")
+    log.info("signin user=%s", user.id)
     return _session(user)
 
 

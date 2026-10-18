@@ -14,15 +14,17 @@ from app.constants import (
     TOOL_MAX_PATH_HOPS,
     TOOL_MAX_RESULTS,
 )
-from app.mcp_server.common import canon_scope, entity_out, relation_out, resolve, short
+from app.mcp_server.common import branch_scope, entity_out, relation_out, resolve, short
 from app.mcp_server.matching import content_words, match_entities
 from app.repo import communities, graph
 from app.repo.models import Community, GraphEntity, GraphRelation
 
 
-def find_entities(book_id: str, text: str, limit: int = 10) -> dict[str, Any]:
+def find_entities(
+    book_id: str, text: str, limit: int = 10, session_id: str | None = None
+) -> dict[str, Any]:
     """Entities named in `text`; when no name matches, the entities closest in meaning."""
-    scope = canon_scope(book_id)
+    scope = branch_scope(book_id, session_id)
     limit = min(max(limit, 1), TOOL_MAX_RESULTS)
     found = [
         {**f, "match": "name"} for f in match_entities(text, graph.entity_index(scope), limit)
@@ -45,10 +47,12 @@ def find_entities(book_id: str, text: str, limit: int = 10) -> dict[str, Any]:
     }  # fmt: skip
 
 
-def get_neighbors(book_id: str, entity: str, hops: int = 1, limit: int = 25) -> dict[str, Any]:
+def get_neighbors(
+    book_id: str, entity: str, hops: int = 1, limit: int = 25, session_id: str | None = None
+) -> dict[str, Any]:
     if not 1 <= hops <= TOOL_MAX_HOPS:
         raise ValueError(f"hops must be between 1 and {TOOL_MAX_HOPS}")
-    scope = canon_scope(book_id)
+    scope = branch_scope(book_id, session_id)
     start = resolve(scope, entity)
     limit = min(max(limit, 1), TOOL_MAX_NEIGHBORS)
 
@@ -74,9 +78,9 @@ def get_neighbors(book_id: str, entity: str, hops: int = 1, limit: int = 25) -> 
     }
 
 
-def find_path(book_id: str, a: str, b: str) -> dict[str, Any]:
+def find_path(book_id: str, a: str, b: str, session_id: str | None = None) -> dict[str, Any]:
     """Breadth-first search over REL edges, ignoring direction, up to TOOL_MAX_PATH_HOPS."""
-    scope = canon_scope(book_id)
+    scope = branch_scope(book_id, session_id)
     src, dst = resolve(scope, a)["key"], resolve(scope, b)["key"]
     if src == dst:
         raise ValueError("both names resolve to the same entity")
@@ -128,9 +132,13 @@ def _normalize_rel(rel_type: str) -> str:
 
 
 def get_relations(
-    book_id: str, entity: str, rel_type: str | None = None, limit: int = 25
+    book_id: str,
+    entity: str,
+    rel_type: str | None = None,
+    limit: int = 25,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
-    scope = canon_scope(book_id)
+    scope = branch_scope(book_id, session_id)
     start = resolve(scope, entity)
     rel = _normalize_rel(rel_type) if rel_type else None
     rows = graph.entity_relations(
@@ -157,7 +165,7 @@ def community_out(c: Community, score: float | None = None, chars: int = 1500) -
 def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
     """Communities by keyword and meaning. When neither finds anything, the book overview and the
     largest groups, so a big-picture question always gets the big picture."""
-    canon_scope(book_id)
+    branch_scope(book_id)
     everything = communities.list_communities(book_id)
     if not everything:
         return {"communities": [], "note": "no communities have been built for this book yet"}

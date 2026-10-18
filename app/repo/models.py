@@ -103,6 +103,8 @@ class Message(_Doc):
     graph_refs: dict[str, list] = Field(default_factory=dict)
     # Why the answer holds: {chain: [relation + {src, dst, why}], conclusion}; None without one.
     reasoning: dict[str, Any] | None = None
+    route: str | None = None  # "local", "global" or "edit": how the answer was produced
+    diff: dict[str, Any] | None = None  # what an editing turn changed in the storyline
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -114,6 +116,83 @@ class Note(_Doc):
     message_id: str | None = None
     text: str
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class DraftState(BaseModel):
+    """An uncommitted edit session on a storyline: where it diverges and who it touches."""
+
+    premise: str
+    anchor_event: str
+    divergence_pos: float
+    affected: list[str] = Field(default_factory=list)  # entity keys whose situation changed
+
+
+class Storyline(_Doc):
+    book_id: str
+    owner_id: str | None = None
+    name: str
+    premise: str = ""  # the first "what if"
+    visibility: Literal["public", "private"] = "private"
+    head_seq: int = 0  # seq of the last op written
+    committed_seq: int = 0  # ops up to here passed verification
+    version: int = 0  # bumped by every draft change; a verification is valid for one version
+    verified_version: int | None = None  # version that last passed verification
+    draft: DraftState | None = None
+    last_verification: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+OpKind = Literal["set_fact", "hide_node", "hide_edge", "add_event"]
+
+
+class StorylineOp(_Doc):
+    """Append-only edit log entry; the source of truth for a storyline."""
+
+    storyline_id: str
+    seq: int
+    kind: OpKind
+    payload: dict[str, Any]
+    status: Literal["applied", "reverted"] = "applied"
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class StorylineItem(_Doc):
+    """One thing in the ripple queue: a canon event or relation the draft must decide on."""
+
+    storyline_id: str
+    kind: Literal["event", "relation"]
+    ref: str  # event key or relation id
+    pos: float
+    summary: str
+    chapter: str | None = None
+    reason: str
+    state: Literal["open", "resolved"] = "open"
+    action: str | None = None  # keep / hide / rewrite, once resolved
+
+
+class StorylineChunk(_Doc):
+    """A rewritten chapter of a storyline. Current only while the chapter's visible events still
+    match `fingerprint`; after further edits to that chapter it is stale and is regenerated."""
+
+    storyline_id: str
+    book_id: str
+    chapter: str
+    text: str
+    fingerprint: str  # hash of the chapter's visible event keys when it was written
+    op_seq: int  # the storyline's head_seq then
+    seq_start: int  # original chunks the chapter covers
+    seq_end: int
+    page_spans: list[PageSpan] = Field(default_factory=list)  # the original chapter's pages
+    issues: list[str] = Field(default_factory=list)  # contradictions the check still found
+    created_at: datetime = Field(default_factory=utcnow)
+
+    def as_chunk(self) -> Chunk:
+        """The passage as a chunk, so text tools and citations treat it like the original text."""
+        return Chunk(
+            id=self.id, book_id=self.book_id, seq=self.seq_start, chapter=self.chapter,
+            text=self.text, page_spans=self.page_spans,
+        )  # fmt: skip
 
 
 class Community(_Doc):

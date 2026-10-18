@@ -2,15 +2,32 @@ from typing import Any
 
 from app.constants import TOOL_DESCRIPTION_CHARS
 from app.mcp_server.matching import resolve_entity
-from app.repo import GraphScope, books, graph
-from app.repo.models import GraphEntity, GraphRelation
+from app.repo import GraphScope, books, graph, sessions, storylines
+from app.repo.models import GraphEntity, GraphRelation, Storyline
 
 
-def canon_scope(book_id: str) -> GraphScope:
-    """Scope for a tool call. Raises if the book does not exist."""
+def session_storyline(book_id: str, session_id: str | None) -> Storyline | None:
+    """The storyline the session is working in, or None for canon. Raises on an unknown book or
+    a session of another book."""
     if books.get_book(book_id) is None:
         raise ValueError(f"unknown book '{book_id}'")
-    return GraphScope.canon(book_id)
+    if session_id is None:
+        return None
+    session = sessions.get_session(session_id)
+    if session is None or session.book_id != book_id:
+        raise ValueError(f"unknown session '{session_id}' for this book")
+    if session.storyline_id is None:
+        return None
+    sl = storylines.get_storyline(session.storyline_id)
+    if sl is None or sl.book_id != book_id:
+        raise ValueError(f"unknown storyline '{session.storyline_id}'")
+    return sl
+
+
+def branch_scope(book_id: str, session_id: str | None = None) -> GraphScope:
+    """Scope for a tool call: the session's storyline (its draft included) or canon."""
+    sl = session_storyline(book_id, session_id)
+    return storylines.scope(sl) if sl else GraphScope.canon(book_id)
 
 
 def short(text: str, limit: int = TOOL_DESCRIPTION_CHARS) -> str:

@@ -226,6 +226,8 @@ def test_server_registers_all_tools():
         "retrieve", "find_entities", "get_neighbors", "find_path", "get_relations", "search_communities",
         "get_chunks", "search_chunks", "get_chapter_summary", "get_timeline",
         "get_history", "get_session_summary", "save_note",
+        "get_dependents", "get_state_at", "start_draft", "get_open_items", "resolve_item",
+        "verify_draft", "commit_draft", "discard_draft", "read_chapter", "generate_passage",
     }
     assert "book_id" in tools["find_path"].inputSchema["required"]
     assert "session_id" in tools["save_note"].inputSchema["required"]

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -15,6 +16,7 @@ from app.repo.models import Book, User, Visibility
 from app.repo.service.parsing import PDFParseError, ScannedPDFError, parse_pdf
 
 router = APIRouter(prefix="/books", tags=["books"])
+log = logging.getLogger(__name__)
 
 PROGRESS_POLL_SECONDS = 2
 
@@ -61,6 +63,7 @@ def get_book(book_id: str) -> BookOut:
 async def ingestion_events(book_id: str) -> StreamingResponse:
     """Server-Sent Events: the book's ingestion progress, sent on change until ready or failed."""
     await run_in_threadpool(_get, book_id)
+    log.debug("progress stream opened book=%s", book_id)
 
     async def stream():
         last = None
@@ -90,17 +93,21 @@ def upload_book(
     Re-uploading the same file returns the user's existing book; a failed one is ingested again.
     """
     if not (file.filename or "").lower().endswith(".pdf"):
+        log.warning("upload rejected: not a PDF (%s)", file.filename)
         raise HTTPException(415, "only PDF files are supported")
     data = file.file.read()
     existing = books.find_by_content_hash(hashlib.sha256(data).hexdigest(), user.id)
     if existing and existing.status != "failed":
+        log.info("upload is a duplicate of book=%s status=%s user=%s", existing.id, existing.status, user.id)
         return _out(existing)
 
     try:
         parsed = parse_pdf(data)
     except ScannedPDFError as exc:
+        log.warning("upload rejected: scanned PDF (%s, %d bytes)", file.filename, len(data))
         raise HTTPException(422, str(exc)) from exc
     except PDFParseError as exc:
+        log.warning("upload rejected: unreadable PDF (%s): %s", file.filename, exc)
         raise HTTPException(400, str(exc)) from exc
 
     book = existing or books.create_book(
@@ -112,5 +119,7 @@ def upload_book(
             visibility=visibility,
         )
     )
+    log.info("upload accepted book=%s user=%s bytes=%d pages=%s retry=%s", book.id, user.id,
+             len(data), parsed.page_count, existing is not None)
     background.add_task(ingest_book, book.id, parsed)
     return _out(book)

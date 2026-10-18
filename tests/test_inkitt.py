@@ -260,11 +260,11 @@ async def test_storyline_of_catalog_book_publishable_by_its_creator(env, monkeyp
     assert "error" in book_chat
 
 
-async def test_storylines_not_stored_yet(env):
+async def test_unknown_storyline_is_reported(env):
     user = make_user()
     book = make_book(owner_id=user.id)
     out = json.loads(await agent_tools._publish_tool(FakeInkitt(), book.id, user.id, "sl1").ainvoke({}))
-    assert "can't be published yet" in out["error"]
+    assert "unknown storyline" in out["error"]
 
 
 async def test_agent_reports_token_required(env, monkeypatch):
