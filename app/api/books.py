@@ -9,13 +9,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import computed_field
 
-from app.api.auth import current_user, optional_user
+from app.api.auth import current_user
 from app.ingestion import ingest_book, progress
 from app.repo import books
 from app.repo.models import Book, User, Visibility
 from app.repo.service.parsing import PDFParseError, ScannedPDFError, parse_pdf
 
-router = APIRouter(prefix="/books", tags=["books"])
+router = APIRouter(prefix="/books", tags=["books"], dependencies=[Depends(current_user)])
 log = logging.getLogger(__name__)
 
 PROGRESS_POLL_SECONDS = 2
@@ -42,15 +42,13 @@ def _get(book_id: str) -> Book:
 
 @router.get("", response_model=list[BookOut], response_model_by_alias=False)
 def list_books(
-    user: Annotated[User | None, Depends(optional_user)],
+    user: Annotated[User, Depends(current_user)],
     scope: Literal["public", "mine"] = "public",
 ) -> list[BookOut]:
     """`public`: the public library, without failed books. `mine`: the signed-in user's uploads,
     public or private, failed ones included so they can be uploaded again."""
     if scope == "public":
         return [_out(b) for b in books.list_by_visibility("public") if b.status != "failed"]
-    if user is None:
-        raise HTTPException(401, "sign in required")
     return [_out(b) for b in books.list_owned_books(user.id)]
 
 

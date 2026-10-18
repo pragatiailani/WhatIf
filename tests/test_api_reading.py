@@ -87,7 +87,8 @@ def test_graph(client, monkeypatch):
         [(GraphEvent(key="e1", summary="Ravi leaves", story_pos=0, chapter="Chapter 1"), ["ravi"])],
         [GraphRelation(id="r1", src="ravi", dst="asha", rel="FRIEND_OF")],
     ))
-    out = client.get(f"/books/{b.id}/graph").json()
+    _, h = user()
+    out = client.get(f"/books/{b.id}/graph", headers=h).json()
     assert out["entities"][0]["key"] == "ravi" and "embedding" not in out["entities"][0]
     assert out["entities"][0]["community_id"] == 1
     assert out["events"] == [{"key": "e1", "summary": "Ravi leaves", "story_pos": 0, "chapter": "Chapter 1",
@@ -104,13 +105,13 @@ def test_book_access(client):
     private = book(visibility="private", owner_id=owner.id)
     assert client.get(f"/books/{private.id}/storylines", headers=owner_h).json() == []
     assert client.get(f"/books/{private.id}/storylines", headers=other_h).status_code == 404
-    assert client.get(f"/books/{private.id}/storylines").status_code == 404
+    assert client.get(f"/books/{private.id}/storylines").status_code == 401
     shared = book(visibility="private", owner_id=owner.id, shared_with=[other.id])
     assert client.get(f"/books/{shared.id}/storylines", headers=other_h).status_code == 200
 
     unready = book(status="merging")
-    assert client.get(f"/books/{unready.id}/graph").status_code == 409
-    assert client.get(f"/books/{book().id}/graph?storyline_id=s1").status_code == 404
+    assert client.get(f"/books/{unready.id}/graph", headers=owner_h).status_code == 409
+    assert client.get(f"/books/{book().id}/graph?storyline_id=s1", headers=owner_h).status_code == 404
 
 
 # --- chat ----------------------------------------------------------------------

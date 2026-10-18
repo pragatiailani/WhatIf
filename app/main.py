@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import repo
 from app.api import auth, books, chat, memories, reading
+from app.constants import DEFAULT_CORS_ORIGINS
 from app.api.middleware import REQUEST_ID_HEADER, RequestLogMiddleware
 from app.logging_config import setup_logging
 
@@ -44,10 +45,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+def _cors_origins() -> list[str]:
+    from app.config import get_settings
+
+    try:
+        extra = get_settings().cors_origins
+    except Exception:  # settings unavailable (e.g. no .env): the defaults still work for local dev
+        extra = ""
+    return [*DEFAULT_CORS_ORIGINS, *(o.strip().rstrip("/") for o in extra.split(",") if o.strip())]
+
+
+# CORS middleware. The refresh cookie needs credentials, which browsers refuse with a "*" origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

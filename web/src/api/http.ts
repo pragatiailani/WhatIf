@@ -1,18 +1,67 @@
 // HTTP implementation of `Api`, the contract the FastAPI routes should satisfy.
 // Chat and ingestion progress stream as Server-Sent Events. `VITE_API_URL` is the server.
 
+import { getAccessToken, notifySessionLost, setAccessToken } from "../auth/token";
 import type { Api, ChatEvent } from "./client";
-import type { ChatTurn, IngestionProgress } from "./types";
+import type { ChatTurn, IngestionProgress, Session } from "./types";
 
-const BASE = (import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-const TOKEN_KEY = "whatif.token";
+// Default to the page's own hostname, so the refresh cookie (SameSite=Lax) is sent whether the app
+// is opened as localhost or 127.0.0.1.
+const BASE = (import.meta.env.VITE_API_URL ?? `http://${window.location.hostname}:8000`).replace(/\/$/, "");
+
+const send = (path: string, init: RequestInit = {}) => {
+  const headers = new Headers(init.headers);
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  // `include` sends and accepts the httpOnly refresh cookie on this cross-origin API.
+  return fetch(BASE + path, { ...init, headers, credentials: "include" });
+};
+
+let refreshing: Promise<Session> | null = null;
+
+/** Trades the refresh cookie for a new session and keeps its access token. Concurrent callers
+ *  (React StrictMode, parallel requests) share one request: refresh tokens are single use, so a
+ *  second request with the same cookie would fail and clear the new one. */
+function refreshSession(): Promise<Session> {
+  refreshing ??= (async () => {
+    try {
+      const res = await fetch(BASE + "/auth/refresh", { method: "POST", credentials: "include" });
+      if (!res.ok) throw await errorFrom(res);
+      const session: Session = await res.json();
+      setAccessToken(session.token);
+      return session;
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
+/** `fetch` with the access token. On a 401 the session is renewed and the request retried once;
+ *  if that fails the user is signed out. */
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const res = await send(path, init);
+  if (res.status !== 401) return res;
+  if (!(await refreshSession().then(() => true, () => false))) {
+    setAccessToken(null);
+    notifySessionLost();
+    return res;
+  }
+  return send(path, init);
+}
 
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = localStorage.getItem(TOKEN_KEY);
   const headers = new Headers(init.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const res = await fetch(BASE + path, { ...init, headers });
+  const res = await authFetch(path, { ...init, headers });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+/** A call made without an access token (sign-in, sign-up): the response sets the refresh cookie. */
+async function open<T>(path: string, init: RequestInit): Promise<T> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const res = await fetch(BASE + path, { ...init, headers, credentials: "include" });
   if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
@@ -51,8 +100,12 @@ async function readSse(res: Response, onEvent: (event: string, data: string) => 
 }
 
 export const httpApi: Api = {
-  signUp: (name, email, password) => req("/auth/signup", json("POST", { name, email, password })),
-  signIn: (email, password) => req("/auth/signin", json("POST", { email, password })),
+  signUp: (name, email, password) => open("/auth/signup", json("POST", { name, email, password })),
+  signIn: (email, password) => open("/auth/signin", json("POST", { email, password })),
+  refresh: refreshSession,
+  signOut: async () => {
+    await fetch(BASE + "/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
+  },
   me: () => req("/auth/me"),
   setInkittToken: (token) => req("/auth/me/inkitt", json("PUT", { token })),
   clearInkittToken: () => req("/auth/me/inkitt", json("DELETE")),
@@ -66,14 +119,19 @@ export const httpApi: Api = {
     Object.entries(meta).forEach(([k, v]) => form.append(k, v));
     return req("/books", { method: "POST", body: form });
   },
+  // `EventSource` can't send an Authorization header, so the stream is read with fetch instead.
   watchIngestion: (bookId, onProgress) => {
-    const source = new EventSource(`${BASE}/books/${bookId}/ingestion/events`);
-    source.onmessage = (e) => {
-      const p: IngestionProgress = JSON.parse(e.data);
-      onProgress(p);
-      if (p.status === "ready" || p.status === "failed") source.close();
-    };
-    return () => source.close();
+    const stop = new AbortController();
+    (async () => {
+      const res = await authFetch(`/books/${bookId}/ingestion/events`, { signal: stop.signal });
+      if (!res.ok) return;
+      await readSse(res, (_event, data) => {
+        const p: IngestionProgress = JSON.parse(data);
+        onProgress(p);
+        if (p.status === "ready" || p.status === "failed") stop.abort();
+      });
+    })().catch(() => {}); // aborted, or the connection dropped
+    return () => stop.abort();
   },
 
   getGraph: (bookId, sid) => req(`/books/${bookId}/graph${sid ? `?storyline_id=${sid}` : ""}`),
@@ -93,10 +151,9 @@ export const httpApi: Api = {
 
   history: (bookId, sid) => req(`/books/${bookId}/messages${sid ? `?storyline_id=${sid}` : ""}`),
   send: async (bookId, sid, text, onEvent) => {
-    const token = localStorage.getItem(TOKEN_KEY);
-    const res = await fetch(`${BASE}/books/${bookId}/chat`, {
+    const res = await authFetch(`/books/${bookId}/chat`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ storyline_id: sid, text }),
     });
     if (!res.ok) throw await errorFrom(res);
