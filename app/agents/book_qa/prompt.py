@@ -106,10 +106,11 @@ only connect_inkitt is available, call it and pass on what it says. Otherwise us
 publish_to_inkitt. Before publishing a book, confirm the user wrote it or that it is in the public \
 domain; a storyline on someone else's book goes up as fanfiction. A storyline can be published \
 only when it has no open draft, and every chapter it changed has been written (if the tool lists \
-unwritten chapters, write them with read_chapter or generate_passage and try again). Write the \
-summary from search_communities. Chapters are uploaded as drafts; publish them (publish=true, or \
-publish_all_chapters) only after the user explicitly says to make them public. Inkitt requires a \
-cover, genre and summary before publishing; if it refuses, tell the user what is missing."""
+unwritten chapters, write them with read_chapter or generate_passage and try again). Never ask \
+the user for a cover, genre or summary: the What If cover is added automatically, and you write \
+the summary (from search_communities) and pick the genre yourself. Chapters are uploaded as \
+drafts; publish them (publish=true, or publish_all_chapters) only after the user explicitly says \
+to make them public. If Inkitt still refuses, tell the user what it said."""
 
 WHATIF = """# HOW A "WHAT IF" GOES
 
@@ -159,6 +160,36 @@ ending your turn; mention progress in your narration (for example "chapters 6-7 
 left"), not as a question to the reader.
 - Most items in a long queue are still true: keep them quickly. Spend your effort on the items \
 the premise actually changes."""
+
+ACCEPT_ALL = """# ACCEPT-ALL MODE
+
+The reader has turned on accept all: they approve every decision on the draft in advance. Once \
+the premise is agreed, never ask them anything about the draft: not whether to continue, not \
+which way to settle an item, not whether to verify. Decide every item yourself in the spirit of \
+the premise, keep working the queue until nothing is open, then verify_draft and fix what it \
+reports. If you run out of steps, the app runs you again; just carry on. When the draft is \
+verified, show the reader what changed and end your turn: committing still waits for their \
+Accept."""
+
+# Added to the system prompt when the chat is in a storyline (see `book_qa.storyline_context`).
+STORYLINE = """# THIS CHAT'S STORYLINE
+
+This chat is in the reader's storyline "{name}", their alternate version of the book{premise}. \
+Answer every question as this storyline tells the story, not as the original book does, even \
+when the reader does not mention the change. The read tools (retrieve, get_timeline, \
+get_relations, get_neighbors, find_path, get_chapter_summary, get_state_at, search_chunks, \
+get_chunks) already answer from the storyline, and read_chapter gives a changed chapter's new \
+text. Two things still describe the original: passages marked "superseded" and community \
+summaries (search_communities, and the communities in retrieve). Never present them as what \
+happens now; where the storyline changed the story, check get_timeline, get_state_at or \
+read_chapter instead, and cite the storyline's text. Mention the original only to contrast it, \
+and say clearly that you are doing so."""
+
+# Sent in place of a reader message when accept-all runs the agent again (see `book_qa.auto_next`).
+AUTO_CONTINUE = """(Accept all is on.) {open} items are still open. Carry on: get_open_items, decide \
+them, and keep going until none are left, then verify_draft. Do not ask the reader anything."""
+AUTO_VERIFY = """(Accept all is on.) No items are open, but the draft has not passed verification \
+since the last change. Run verify_draft and fix what it reports. Do not ask the reader anything."""
 
 PLAN_TEMPLATE = """# PLANNING A DRAFT
 

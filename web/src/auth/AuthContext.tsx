@@ -3,7 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { api } from "../api/client";
 import type { User } from "../api/types";
 import { PageLoader } from "../components/Loaders";
-import { onSessionLost, setAccessToken } from "./token";
+import { getAccessToken, onSessionLost, setAccessToken } from "./token";
 
 interface AuthState {
   user: User | null;
@@ -19,16 +19,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
 
-  // The access token is only in memory, so on load the refresh cookie restores the session.
+  // On load a saved access token restores the user (renewed via the refresh cookie if it expired);
+  // without one, the refresh cookie alone may still restore the session.
   useEffect(() => {
-    api
-      .refresh()
-      .then((s) => {
-        setAccessToken(s.token);
-        setUser(s.user);
-      })
-      .catch(() => {})
-      .finally(() => setReady(true));
+    const restore = getAccessToken()
+      ? api.me().then(setUser)
+      : api.refresh().then((s) => {
+          setAccessToken(s.token);
+          setUser(s.user);
+        });
+    restore.catch(() => setAccessToken(null)).finally(() => setReady(true));
     // If a later request can't renew the session, drop to signed out; RequireAuth then redirects.
     return onSessionLost(() => setUser(null));
   }, []);

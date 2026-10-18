@@ -1,22 +1,23 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowLeft, BookMarked, Check, ChevronDown, GitFork, Globe, History, Lock, MessageSquare, MessagesSquare, Network, Plus, RotateCcw, Save, Send, Sparkles, Wand2, X,
+  ArrowLeft, BookMarked, Check, ChevronDown, Globe, Lock, MessageSquare, MessagesSquare, Network, Plus, RotateCcw, Send, Sparkles, Wand2, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { ACCEPT_PROPOSAL } from "../api/types";
-import type { Book, ChatSummary, Checkpoint, Citation, Message, Proposal, Reasoning, StoryDiff, StoryGraph, Storyline, TraceStep } from "../api/types";
+import type { Book, ChatSummary, Citation, Message, Proposal, Reasoning, StoryDiff, StoryGraph, Storyline, TraceStep } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { GraphView, type Overlay } from "../components/GraphView";
 import { InkDots, PageLoader, QuillLoader } from "../components/Loaders";
 import { Markdown } from "../components/Markdown";
 import { InkittTokenModal } from "../components/InkittTokenModal";
-import { useFork } from "../components/StorylineCard";
 import { Badge, Button, timeAgo } from "../components/ui";
 import { errorText, useToast } from "../lib/ui";
 
-const looksLikeEdit = (t: string) => /^\s*(what if|suppose|imagine|rewrite|change|make|let)\b/i.test(t) || /\b(instead of|never|hadn't|didn't)\b/i.test(t);
+const ACCEPT_ALL_KEY = "storyline.acceptAll";
+
+const looksLikeEdit =(t: string) => /^\s*(what if|suppose|imagine|rewrite|change|make|let)\b/i.test(t) || /\b(instead of|never|hadn't|didn't)\b/i.test(t);
 
 interface Pending {
   user: Message;
@@ -33,7 +34,6 @@ export default function Workspace() {
   const { user } = useAuth();
   const nav = useNavigate();
   const toast = useToast();
-  const { fork, overlay: forkOverlay } = useFork();
 
   const [book, setBook] = useState<Book | null>(null);
   const [storyline, setStoryline] = useState<Storyline | null>(null);
@@ -49,13 +49,29 @@ export default function Workspace() {
   chatParam.current = params.get("chat");
   const [pending, setPending] = useState<Pending | null>(null);
   const [active, setActive] = useState<string | null>(null);
-  const [restoreOverlay, setRestoreOverlay] = useState<{ overlay: Overlay; label: string; ghost: StoryGraph } | null>(null);
   const [pane, setPane] = useState<"chat" | "graph">("chat");
-  const [drawer, setDrawer] = useState(false);
   const [error, setError] = useState("");
   /** the message to send again once the user has connected Inkitt */
   const [inkittRetry, setInkittRetry] = useState<string | null>(null);
   const autoSent = useRef(false);
+  /** bumped whenever another book or storyline is opened, so a turn still streaming for the old one stops updating the page */
+  const view = useRef(0);
+  /** accept all: the assistant settles a whole draft without asking before each batch */
+  const [acceptAll, setAcceptAll] = useState(() => {
+    try {
+      return localStorage.getItem(ACCEPT_ALL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleAcceptAll = (on: boolean) => {
+    setAcceptAll(on);
+    try {
+      localStorage.setItem(ACCEPT_ALL_KEY, on ? "1" : "0");
+    } catch {
+      /* storage blocked: the choice lasts for this page only */
+    }
+  };
 
   const mine = !!storyline && storyline.owner_id === user?.id;
   const readOnly = !!storyline && !mine;
@@ -64,8 +80,9 @@ export default function Workspace() {
   // in ?chat= or the most recent one.
   useEffect(() => {
     let live = true;
+    view.current += 1;
     setMessages(null);
-    setRestoreOverlay(null);
+    setPending(null); // a turn still streaming belongs to the storyline we left; it is saved there
     Promise.all([api.getBook(bookId), sid ? api.getStoryline(sid) : Promise.resolve(null), api.getGraph(bookId, sid), api.listChats(bookId, sid), api.listStorylines(bookId)])
       .then(async ([b, s, g, cs, ls]) => {
         const pick = cs.find((c) => c.id === chatParam.current)?.id ?? cs[0]?.id ?? null;
@@ -90,7 +107,6 @@ export default function Workspace() {
       shownChat.current = id;
       setChatId(id);
       setActive(null);
-      setRestoreOverlay(null);
       setParams(id ? { chat: id } : {}, { replace: true });
       if (!id) return setMessages([]);
       setChatLoading(true);
@@ -113,19 +129,29 @@ export default function Workspace() {
       if (!text.trim() || pending) return;
       const userMsg: Message = { id: "tmp", role: "user", content: text, created_at: new Date().toISOString() };
       setPending({ user: userMsg, phase: "Opening the book…", text: "", steps: [] });
-      setRestoreOverlay(null);
       setPane("chat");
+      const started = view.current;
+      const left = () => view.current !== started; // the reader opened another storyline meanwhile
       try {
         const turn = await api.send(bookId, sid, chatId, text, (e) =>
           setPending((p) => {
-            if (!p) return p;
+            if (!p || left()) return p;
             // A new phase means the text so far was the agent's reasoning; it comes back in a step.
             if (e.type === "phase") return { ...p, phase: e.label, text: "" };
             if (e.type === "step") return { ...p, steps: [...p.steps, e.step] };
             if (e.type === "reasoning") return { ...p, reasoning: e.reasoning };
             return { ...p, text: p.text + e.text };
           }),
+          { auto: acceptAll },
         );
+        if (left()) {
+          // The turn is saved in the chat it was asked in; the page now shows another storyline.
+          if (turn.storyline && !sid) {
+            toast(`Your what-if started a new storyline: “${turn.storyline.title}”`, "success");
+            setLines((ls) => [turn.storyline!, ...ls.filter((l) => l.id !== turn.storyline!.id)]);
+          }
+          return;
+        }
         // Only the latest answer carries the waiting proposal; an earlier one is settled or replaced.
         setMessages((m) => [...(m ?? []).map(({ proposal: _settled, ...rest }) => rest), turn.user, turn.assistant]);
         if (turn.graph) setGraph(turn.graph);
@@ -143,12 +169,12 @@ export default function Workspace() {
         setChats((cs) => [turn.chat, ...cs.filter((c) => c.id !== turn.chat.id)]);
         setParams({ chat: turn.chat.id }, { replace: true });
       } catch (e) {
-        toast(errorText(e), "error");
+        if (!left()) toast(errorText(e), "error");
       } finally {
-        setPending(null);
+        if (!left()) setPending(null);
       }
     },
-    [bookId, sid, chatId, pending, nav, toast, setParams],
+    [bookId, sid, chatId, pending, acceptAll, nav, toast, setParams],
   );
 
   // A new storyline opens with ?prompt=<premise>; send it once.
@@ -165,14 +191,13 @@ export default function Workspace() {
   // A waiting proposal previews the graph it would give; the storyline itself changes on accept.
   const proposal = activeMsg?.proposal;
   const change = proposal?.diff ?? activeMsg?.diff;
-  const overlay: Overlay = restoreOverlay?.overlay ?? (change ? { kind: "diff", diff: change, trace: activeMsg?.trace } : activeMsg?.trace ? { kind: "trace", trace: activeMsg.trace } : null);
+  const overlay: Overlay = change ? { kind: "diff", diff: change, trace: activeMsg?.trace } : activeMsg?.trace ? { kind: "trace", trace: activeMsg.trace } : null;
 
   if (error) return <div className="p-10 text-center text-rose">{error}</div>;
   if (!book || !graph || !messages) return <PageLoader label="Opening the story…" />;
 
   return (
     <div className="flex h-[calc(100dvh-4rem)] flex-col">
-      {forkOverlay}
       <InkittTokenModal
         open={inkittRetry !== null}
         onClose={() => setInkittRetry(null)}
@@ -209,16 +234,6 @@ export default function Workspace() {
               <span className="hidden sm:inline">{storyline.visibility === "public" ? "Published" : "Publish"}</span>
             </Button>
           )}
-          {storyline && (
-            <Button variant="ghost" className="px-2.5" onClick={() => fork(storyline)} title="Fork into your own storyline">
-              <GitFork className="size-4" /> <span className="hidden sm:inline">Fork</span>
-            </Button>
-          )}
-          {storyline && (
-            <Button variant="ghost" className="px-2.5" onClick={() => setDrawer(true)} title="Checkpoints">
-              <History className="size-4" /> <span className="hidden sm:inline">Checkpoints</span>
-            </Button>
-          )}
         </div>
       </div>
 
@@ -241,69 +256,29 @@ export default function Workspace() {
             loading={chatLoading}
             pending={pending}
             active={active}
-            onActivate={(id) => (setActive(id), setRestoreOverlay(null))}
+            onActivate={setActive}
             onSend={send}
             graph={graph}
             readOnly={readOnly}
             storyline={storyline}
-            onFork={() => storyline && fork(storyline)}
             onShowGraph={() => setPane("graph")}
+            acceptAll={acceptAll}
+            onAcceptAll={toggleAcceptAll}
           />
         </section>
         <section className={`relative min-h-0 flex-col lg:flex ${pane === "graph" ? "flex" : "hidden"}`}>
-          <GraphHeader overlay={overlay} activeMsg={activeMsg} proposed={!!proposal && !restoreOverlay} restoreLabel={restoreOverlay?.label} onClear={() => (setActive(null), setRestoreOverlay(null))} />
+          <GraphHeader overlay={overlay} activeMsg={activeMsg} proposed={!!proposal} onClear={() => setActive(null)} />
           <div className="min-h-0 flex-1">
-            <GraphView graph={restoreOverlay?.ghost ?? proposal?.graph ?? graph} overlay={overlay} />
+            <GraphView graph={proposal?.graph ?? graph} overlay={overlay} />
           </div>
         </section>
       </div>
 
-      {storyline && (
-        <CheckpointDrawer
-          open={drawer}
-          onClose={() => setDrawer(false)}
-          storyline={storyline}
-          canRestore={mine}
-          onRestored={(s, g) => {
-            const before = visibleKeys(graph);
-            const after = visibleKeys(g);
-            const removed = [...before].filter((k) => !after.has(k));
-            setStoryline(s);
-            setGraph(g);
-            setActive(null);
-            setRestoreOverlay({
-              label: `Restored to op ${s.head_op_seq}`,
-              ghost: withGhosts(g, graph, removed),
-              overlay: { kind: "diff", diff: { divergence_pos: 0, op_seq: s.head_op_seq, passage: "", added: [...after].filter((k) => !before.has(k)), hidden: removed, modified: [], added_edges: [] } },
-            });
-            setPane("graph");
-          }}
-        />
-      )}
     </div>
   );
 }
 
 const lastAnswer = (h: Message[]) => [...h].reverse().find((m) => m.role === "assistant")?.id ?? null;
-
-/** `g` plus nodes reverted away since `prev`, kept as hidden ghosts so the restore can show what left. */
-function withGhosts(g: StoryGraph, prev: StoryGraph, removed: string[]): StoryGraph {
-  const keys = new Set([...g.entities, ...g.events].map((n) => n.key));
-  const gone = new Set(removed.filter((k) => !keys.has(k)));
-  const relIds = new Set(g.relations.map((r) => r.id));
-  return {
-    ...g,
-    entities: [...g.entities, ...prev.entities.filter((e) => gone.has(e.key))],
-    events: [...g.events, ...prev.events.filter((e) => gone.has(e.key))],
-    relations: [...g.relations, ...prev.relations.filter((r) => !relIds.has(r.id) && (gone.has(r.src) || gone.has(r.dst)))],
-    hidden: [...g.hidden, ...gone],
-  };
-}
-
-function visibleKeys(g: StoryGraph) {
-  const hidden = new Set(g.hidden);
-  return new Set([...g.entities, ...g.events].map((n) => n.key).filter((k) => !hidden.has(k)));
-}
 
 // --- storyline picker ------------------------------------------------------
 
@@ -381,10 +356,11 @@ function ChatBar({ chats, current, inStoryline, disabled, onPick }: { chats: Cha
 }
 
 function Chat({
-  messages, loading, pending, active, onActivate, onSend, graph, readOnly, storyline, onFork, onShowGraph,
+  messages, loading, pending, active, onActivate, onSend, graph, readOnly, storyline, onShowGraph, acceptAll, onAcceptAll,
 }: {
   messages: Message[]; loading: boolean; pending: Pending | null; active: string | null; onActivate: (id: string) => void; onSend: (t: string) => void;
-  graph: StoryGraph; readOnly: boolean; storyline: Storyline | null; onFork: () => void; onShowGraph: () => void;
+  graph: StoryGraph; readOnly: boolean; storyline: Storyline | null; onShowGraph: () => void;
+  acceptAll: boolean; onAcceptAll: (on: boolean) => void;
 }) {
   const [text, setText] = useState("");
   /** the reader pressed Discuss: their next message is feedback on the proposal */
@@ -422,8 +398,7 @@ function Chat({
         {readOnly && storyline && (
           <div className="mb-5 flex items-center gap-3 rounded-xl border border-violet/30 bg-violet/5 px-4 py-3 text-sm">
             <Globe className="size-4 shrink-0 text-violet" />
-            <span className="flex-1 text-ink-soft">You're reading <b className="text-ink">{storyline.owner_name}</b>'s storyline. Ask anything; fork it to rewrite.</span>
-            <Button variant="outline" className="px-3 py-1.5" onClick={onFork}><GitFork className="size-3.5" /> Fork</Button>
+            <span className="flex-1 text-ink-soft">You're reading <b className="text-ink">{storyline.owner_name}</b>'s storyline.</span>
           </div>
         )}
         {loading && <div className="flex justify-center py-10"><InkDots className="text-gold" /></div>}
@@ -499,7 +474,7 @@ function Chat({
           {edit && text && (
             <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className={`mb-2 flex items-center gap-1.5 text-xs ${readOnly ? "text-rose" : "text-sage"}`}>
               <Wand2 className="size-3.5" />
-              {readOnly ? "This looks like a rewrite. Fork the storyline to change it." : storyline ? "This will rewrite the storyline." : "This will branch a new storyline from canon."}
+              {readOnly ? "This looks like a rewrite. Only the storyline's owner can change it." : storyline ? "This will rewrite the storyline." : "This will branch a new storyline from canon."}
             </motion.p>
           )}
         </AnimatePresence>
@@ -527,6 +502,20 @@ function Chat({
             {pending ? <InkDots /> : edit ? <Wand2 className="size-4" /> : <Send className="size-4" />}
           </Button>
         </div>
+        {!readOnly && (
+          <label className="mt-2 flex w-fit cursor-pointer items-center gap-2 px-1 text-xs text-ink-mute select-none" title="Settle every change in a rewrite without asking before each batch. You still approve the result.">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={acceptAll}
+              onClick={() => onAcceptAll(!acceptAll)}
+              className={`relative h-4 w-7 shrink-0 rounded-full transition ${acceptAll ? "bg-sage" : "bg-line"}`}
+            >
+              <span className={`absolute top-0.5 size-3 rounded-full bg-bg transition-all ${acceptAll ? "left-3.5" : "left-0.5"}`} />
+            </button>
+            <span className={acceptAll ? "text-sage" : ""}>Accept all: finish rewrites without asking</span>
+          </label>
+        )}
       </form>
     </>
   );
@@ -692,13 +681,10 @@ function TraceSteps({ steps }: { steps: TraceStep[] }) {
 
 // --- graph header ------------------------------------------------------------
 
-function GraphHeader({ overlay, activeMsg, proposed, restoreLabel, onClear }: { overlay: Overlay; activeMsg?: Message; proposed: boolean; restoreLabel?: string; onClear: () => void }) {
+function GraphHeader({ overlay, activeMsg, proposed, onClear }: { overlay: Overlay; activeMsg?: Message; proposed: boolean; onClear: () => void }) {
   let title = "The whole story";
   let detail = "Select an answer to see the path it took.";
-  if (restoreLabel && overlay?.kind === "diff") {
-    title = restoreLabel;
-    detail = `${overlay.diff.added.length} nodes returned · ${overlay.diff.hidden.length} removed`;
-  } else if (proposed && overlay?.kind === "diff") {
+  if (proposed && overlay?.kind === "diff") {
     title = "Proposed change · not applied yet";
     detail = `${overlay.diff.added.length} would be added · ${overlay.diff.hidden.length} removed · Accept to apply`;
   } else if (overlay?.kind === "diff") {
@@ -726,105 +712,5 @@ function GraphHeader({ overlay, activeMsg, proposed, restoreLabel, onClear }: { 
         </button>
       )}
     </div>
-  );
-}
-
-// --- checkpoints ---------------------------------------------------------------
-
-function CheckpointDrawer({ open, onClose, storyline, canRestore, onRestored }: { open: boolean; onClose: () => void; storyline: Storyline; canRestore: boolean; onRestored: (s: Storyline, g: StoryGraph) => void }) {
-  const toast = useToast();
-  const [list, setList] = useState<Checkpoint[] | null>(null);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) api.listCheckpoints(storyline.id).then(setList);
-  }, [open, storyline.id, storyline.head_op_seq]);
-
-  const saveCp = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy("save");
-    try {
-      const c = await api.saveCheckpoint(storyline.id, name);
-      setList((l) => [c, ...(l ?? [])]);
-      setName("");
-      toast(`Saved “${c.name}”.`, "success");
-    } catch (err) {
-      toast(errorText(err), "error");
-    } finally {
-      setBusy(null);
-    }
-  };
-  const restore = async (c: Checkpoint) => {
-    setBusy(c.id);
-    try {
-      const { storyline: s, graph } = await api.restoreCheckpoint(storyline.id, c.id);
-      onRestored(s, graph);
-      toast(`Restored to “${c.name}”. Your previous head was auto-saved.`, "success");
-      onClose();
-    } catch (err) {
-      toast(errorText(err), "error");
-    } finally {
-      setBusy(null);
-      setConfirm(null);
-    }
-  };
-
-  return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div className="fixed inset-0 z-40 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={onClose} />
-          <motion.aside initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }} transition={{ type: "spring", stiffness: 300, damping: 34 }}
-            className="fixed inset-y-0 right-0 z-50 flex w-full max-w-sm flex-col border-l border-line bg-surface shadow-2xl">
-            <div className="flex items-center justify-between border-b border-line px-5 py-4">
-              <div>
-                <h2 className="font-display text-2xl">Checkpoints</h2>
-                <p className="text-xs text-ink-mute">Head is at op {storyline.head_op_seq}</p>
-              </div>
-              <button onClick={onClose} className="text-ink-mute hover:text-ink" aria-label="Close"><X className="size-5" /></button>
-            </div>
-            {canRestore && (
-              <form onSubmit={saveCp} className="flex gap-2 border-b border-line p-4">
-                <input className="input py-2" value={name} onChange={(e) => setName(e.target.value)} placeholder={`Checkpoint at op ${storyline.head_op_seq}`} />
-                <Button type="submit" loading={busy === "save"} className="shrink-0"><Save className="size-4" /></Button>
-              </form>
-            )}
-            <div className="flex-1 overflow-y-auto p-4">
-              {!list ? (
-                <div className="flex justify-center py-10"><InkDots className="text-gold" /></div>
-              ) : list.length === 0 ? (
-                <p className="py-10 text-center text-sm text-ink-mute">No checkpoints yet. Save one before a risky rewrite.</p>
-              ) : (
-                <ol className="relative space-y-3 pl-5">
-                  <span className="absolute bottom-3 left-[5px] top-3 w-px bg-line" />
-                  {list.map((c, i) => (
-                    <motion.li key={c.id} initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }} className="relative">
-                      <span className={`absolute -left-5 top-3 size-2.5 rounded-full border-2 ${c.op_seq === storyline.head_op_seq ? "border-gold bg-gold" : "border-line bg-surface"}`} />
-                      <div className="rounded-xl border border-line p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{c.name}</p>
-                            <p className="text-xs text-ink-mute">op {c.op_seq} · {timeAgo(c.created_at)}{c.auto && " · auto"}</p>
-                          </div>
-                          {canRestore && c.op_seq !== storyline.head_op_seq && (
-                            confirm === c.id ? (
-                              <Button variant="danger" className="px-2.5 py-1 text-xs" loading={busy === c.id} onClick={() => restore(c)}>Confirm</Button>
-                            ) : (
-                              <Button variant="outline" className="px-2.5 py-1 text-xs" onClick={() => setConfirm(c.id)}><RotateCcw className="size-3" /> Restore</Button>
-                            )
-                          )}
-                        </div>
-                      </div>
-                    </motion.li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          </motion.aside>
-        </>
-      )}
-    </AnimatePresence>
   );
 }

@@ -49,6 +49,7 @@ class Ask(BaseModel):
     storyline_id: str | None = None
     chat_id: str | None = None  # the chat to continue
     new_chat: bool = False  # start a new chat instead of continuing the latest one
+    auto: bool = False  # accept all: settle the whole draft without asking (see book_qa.stream)
 
 
 class NewStoryline(BaseModel):
@@ -79,13 +80,13 @@ def _ready(book: Book) -> None:
 
 def _storyline(storyline_id: str, user: User, *, write: bool = False) -> Storyline:
     """The storyline if `user` may see it (theirs, or made public); 404 otherwise. With `write`,
-    only its owner may use it: anyone else is told to fork it."""
+    only its owner may use it."""
     sl = storylines.get_storyline(storyline_id)
     mine = sl is not None and sl.owner_id == user.id
     if sl is None or not (mine or sl.visibility == "public"):
         raise HTTPException(404, "storyline not found")
     if write and not mine:
-        raise HTTPException(403, "This storyline belongs to someone else. Fork it to edit.")
+        raise HTTPException(403, "This storyline belongs to someone else. Only its owner can change it.")
     return sl
 
 
@@ -400,7 +401,7 @@ async def ask(
 
     async def events():
         try:
-            async for kind, value in book_qa.stream(book_id, session.id, body.text):
+            async for kind, value in book_qa.stream(book_id, session.id, body.text, auto=body.auto):
                 if kind == "phase":
                     yield _sse("phase", {"label": value})
                 elif kind == "step":

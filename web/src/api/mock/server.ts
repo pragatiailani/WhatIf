@@ -1,6 +1,6 @@
 // In-browser fake backend. State lives in localStorage so it survives reloads.
 // Mirrors the README's storage model: canon is immutable, storylines are an op log
-// materialized over canon, checkpoints are (name, op_seq), forks copy ops.
+// materialized over canon.
 
 import type { Api, ChatEvent } from "../client";
 import {
@@ -9,7 +9,6 @@ import {
   type BookStatus,
   type ChatSummary,
   type ChatTurn,
-  type Checkpoint,
   type IngestionProgress,
   type Message,
   type Proposal,
@@ -32,7 +31,6 @@ interface Db {
   uploadGraphs: Record<string, StoryGraph>;
   storylines: Storyline[];
   ops: Record<string, Op[]>; // storyline id -> op log
-  checkpoints: Checkpoint[];
   chats: MockChat[];
   drafts: Record<string, Draft>; // storyline id -> the edit waiting for approval
   stars: Record<string, string[]>; // user id -> storyline ids
@@ -66,7 +64,7 @@ function save() {
 }
 
 function seed(): Db {
-  const fresh: Db = { users: [], sessions: {}, books: [], uploadGraphs: {}, storylines: [], ops: {}, checkpoints: [], chats: [], drafts: {}, stars: {} };
+  const fresh: Db = { users: [], sessions: {}, books: [], uploadGraphs: {}, storylines: [], ops: {}, chats: [], drafts: {}, stars: {} };
   const created = "2026-09-01T10:00:00.000Z";
   for (const [key, entry] of Object.entries(CATALOG)) {
     const g = buildGraph(entry);
@@ -375,22 +373,6 @@ const impl: Api = {
     return s;
   },
 
-  async forkStoryline(sid) {
-    await wait(900); // long enough for the fork animation to play
-    const u = requireUser();
-    const parent = findStoryline(sid);
-    const s: Storyline = {
-      ...parent, id: "s-" + id(), owner_id: u.id, owner_name: u.name, title: `${parent.title} (fork)`, visibility: "private",
-      parent_storyline_id: parent.id, fork_op_seq: parent.head_op_seq, forks: 0, stars: 0, created_at: now(), updated_at: now(),
-    };
-    // Copy applied ops up to the fork point under the new sid.
-    db.ops[s.id] = structuredClone((db.ops[sid] ?? []).filter((o) => !o.reverted && o.seq <= parent.head_op_seq));
-    parent.forks += 1;
-    db.storylines.push(s);
-    save();
-    return s;
-  },
-
   async updateStoryline(sid, patch) {
     await latency();
     const u = requireUser();
@@ -411,36 +393,6 @@ const impl: Api = {
     else (mine.push(sid), (s.stars += 1));
     save();
     return s;
-  },
-
-  async listCheckpoints(sid) {
-    await latency();
-    return db.checkpoints.filter((c) => c.storyline_id === sid).sort((a, b) => b.created_at.localeCompare(a.created_at));
-  },
-
-  async saveCheckpoint(sid, name) {
-    await latency();
-    const s = findStoryline(sid);
-    const c: Checkpoint = { id: "c-" + id(), storyline_id: sid, name: name.trim() || `Checkpoint at op ${s.head_op_seq}`, op_seq: s.head_op_seq, auto: false, created_at: now() };
-    db.checkpoints.push(c);
-    save();
-    return c;
-  },
-
-  async restoreCheckpoint(sid, cid) {
-    await wait(700);
-    const u = requireUser();
-    const s = findStoryline(sid);
-    if (s.owner_id !== u.id) throw new Error("Fork this storyline to change it.");
-    const c = db.checkpoints.find((x) => x.id === cid);
-    if (!c) throw new Error("Checkpoint not found.");
-    // Auto-save the head so the restore itself can be undone.
-    db.checkpoints.push({ id: "c-" + id(), storyline_id: sid, name: `Before restoring “${c.name}”`, op_seq: s.head_op_seq, auto: true, created_at: now() });
-    for (const op of db.ops[sid] ?? []) op.reverted = op.seq > c.op_seq;
-    s.head_op_seq = c.op_seq;
-    s.updated_at = now();
-    save();
-    return { storyline: s, graph: graphOf(s.book_id, sid) };
   },
 
   async listChats(bookId, sid) {
@@ -510,7 +462,7 @@ const impl: Api = {
     if (route === "edit") {
       onEvent({ type: "phase", label: "Parsing your what-if into ops…" });
       await wait(700);
-      if (storyline && storyline.owner_id !== u.id) throw new Error("This storyline isn't yours. Fork it to make changes.");
+      if (storyline && storyline.owner_id !== u.id) throw new Error("This storyline isn't yours. Only its owner can change it.");
       onEvent({ type: "phase", label: "Finding the divergence point…" });
       await wait(650);
       const opSeq = (storyline?.head_op_seq ?? 0) + 1;

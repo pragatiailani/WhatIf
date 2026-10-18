@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { ArrowRight, GitFork, MessageCircleQuestion, Network, Sparkles } from "lucide-react";
+import { ArrowRight, Globe, MessageCircleQuestion, Network, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { Page } from "../components/ui";
@@ -43,7 +43,7 @@ const FEATURES = [
   { icon: MessageCircleQuestion, title: "Ask the book", text: "Grounded answers with chapter and page citations, for small questions or the big picture." },
   { icon: Sparkles, title: "Rewrite the plot", text: "Say “what if…” and the story branches. Events that no longer hold fade away and new ones are written in." },
   { icon: Network, title: "See why", text: "Every answer lights up the path it took through the story graph. Nothing is hidden behind the curtain." },
-  { icon: GitFork, title: "Fork & share", text: "Publish your storylines, explore other readers' worlds, and branch any of them into your own." },
+  { icon: Globe, title: "Publish & share", text: "Publish your storylines and explore the worlds other readers have built." },
 ];
 
 export default function Landing() {

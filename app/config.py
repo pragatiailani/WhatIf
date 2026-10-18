@@ -9,6 +9,7 @@ from app.constants import (
     DEFAULT_CHAT_HISTORY_BUDGET,
     DEFAULT_EXTRACTION_BATCH_SIZE,
     DEFAULT_MERGE_CONCURRENCY,
+    INKITT_COVER_URL,
 )
 
 
@@ -51,6 +52,9 @@ class Settings(BaseSettings):
 
     chat_history_budget: int = DEFAULT_CHAT_HISTORY_BUDGET
     mcp_server_url: str = ""  # streamable-http URL of the tool server; empty runs it over stdio
+
+    # Public URL of the cover every story sent to Inkitt gets (Inkitt downloads it); empty sends none.
+    inkitt_cover_url: str = INKITT_COVER_URL
 
 
 @lru_cache

@@ -26,14 +26,22 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Checkpointer
 
 from app.agents.book_qa.explain import explain as explain_answer
-from app.agents.book_qa.prompt import SYSTEM_PROMPT
+from app.agents.book_qa.prompt import (
+    ACCEPT_ALL,
+    AUTO_CONTINUE,
+    AUTO_VERIFY,
+    STORYLINE,
+    SYSTEM_PROMPT,
+)
 from app.agents.logging_mw import ToolCallLogger
 from app.agents.planning import PlanningMiddleware
+from app.agents.tool_gaps import ToolGapRepair
 from app.memory.service import build_memory_context, extract_and_update_memory
 from app.agents.registry import register_agent
 from app.agents.tools import CONNECT_INKITT, open_tools, tool_text
 from app.config import get_settings
 from app.constants import (
+    AUTO_MAX_ROUNDS,
     CITATION_QUOTE_CHARS,
     HISTORY_KEEP_MESSAGES,
     MAX_CITATIONS,
@@ -45,7 +53,8 @@ from app.constants import (
 from app.llm import get_chat_model
 from app.repo import sessions, storylines
 from app.repo.checkpoints import get_checkpointer
-from app.repo.models import Message, utcnow
+from app.repo.models import Message, Storyline, utcnow
+from app.storyline import draft as drafts
 from app.storyline.diff import diff_out
 
 NAME = "book_qa"
@@ -97,6 +106,27 @@ MODEL_NODE = "model"  # create_agent's LLM node; other nodes (summarisation) nev
 TURN_NODES = (MODEL_NODE, "tools")
 
 
+def storyline_context(sl: Storyline) -> str:
+    """The system prompt section that has a storyline chat answered from the storyline."""
+    premise = sl.premise.strip() or (sl.draft.premise if sl.draft else "")
+    return STORYLINE.format(name=sl.name, premise=f' ("{premise}")' if premise else "")
+
+
+def auto_next(session_id: str, seen: tuple[int, int] | None) -> tuple[str, tuple[int, int]] | None:
+    """In accept-all mode, what to tell the agent after a run, or None to end the turn: no open
+    draft, the draft is finished and verified, or the last run changed nothing (`seen` is the
+    draft's (open items, version) after the run before)."""
+    session = sessions.get_session(session_id)
+    sl = storylines.get_storyline(session.storyline_id) if session and session.storyline_id else None
+    if sl is None or sl.draft is None or drafts.awaiting_approval(sl):
+        return None
+    state = (storylines.count_items(sl.id, "open"), sl.version)
+    if state == seen:
+        return None
+    message = AUTO_CONTINUE.format(open=state[0]) if state[0] else AUTO_VERIFY
+    return message, state
+
+
 def build_agent(
     llm: BaseChatModel, tools: list[BaseTool], checkpointer: Checkpointer = None,
     system_prompt: str = SYSTEM_PROMPT,
@@ -113,6 +143,7 @@ def build_agent(
                 keep=("messages", HISTORY_KEEP_MESSAGES),
             ),
             ModelCallLimitMiddleware(run_limit=MAX_MODEL_CALLS),
+            ToolGapRepair(),
             PlanningMiddleware(),
             ToolCallLogger(),
         ],
@@ -281,6 +312,7 @@ async def _stream(
     session_id: str,
     question: str,
     *,
+    auto: bool = False,
     llm: BaseChatModel | None = None,
     checkpointer: Checkpointer = ...,
 ) -> AsyncIterator[tuple[str, Any]]:
@@ -291,6 +323,11 @@ async def _stream(
     Tokens are the model's text as it writes. A model call that goes on to call tools streams its
     reasoning first, which comes back as that call's step `why`; so a phase means the tokens so far
     were reasoning, and `result["answer"]` is the answer.
+
+    With `auto` (accept all) the reader has pre-approved every draft decision: the agent is told
+    not to ask, and while a draft has work left it is run again (`auto_next`), up to
+    AUTO_MAX_ROUNDS times, so a long queue is finished in one turn. Committing still waits for the
+    reader's Accept.
     """
     session = sessions.get_session(session_id)
     if session is None or session.book_id != book_id:
@@ -309,6 +346,10 @@ async def _stream(
             "\nApply preferences when relevant, but the current user request takes precedence. "
             "Memories are not book evidence; verify book claims with the tools and cite passages."
         )
+    if before:
+        system_prompt += "\n\n" + storyline_context(before)
+    if auto:
+        system_prompt += "\n\n" + ACCEPT_ALL
 
     yield "phase", FIRST_PHASE
     question_msg = HumanMessage(content=question)
@@ -316,29 +357,37 @@ async def _stream(
     model = llm or get_chat_model()
     async with open_tools(book_id, session_id, session.user_id, session.storyline_id) as tools:
         agent = build_agent(model, tools, checkpointer, system_prompt=system_prompt)
-        async for mode, data in agent.astream(
-            {"messages": [question_msg]},
-            {"configurable": {"thread_id": session_id}},
-            stream_mode=["messages", "updates"],
-        ):
-            if mode == "messages":
-                chunk, meta = data
-                if meta.get("langgraph_node") != MODEL_NODE or not isinstance(chunk, AIMessage):
-                    continue
-                for name in _tool_names(chunk):
-                    yield "phase", PHASES.get(name, DEFAULT_PHASE)
-                if text := _text(chunk.content):
-                    yield "token", text
-            else:  # "updates": {node: state update}; collect this turn's messages
-                for node, update in data.items():
-                    if node not in TURN_NODES or not isinstance(update, dict):
+        message, seen = question_msg, None
+        for _ in range(1 + (AUTO_MAX_ROUNDS if auto else 0)):
+            async for mode, data in agent.astream(
+                {"messages": [message]},
+                {"configurable": {"thread_id": session_id}},
+                stream_mode=["messages", "updates"],
+            ):
+                if mode == "messages":
+                    chunk, meta = data
+                    if meta.get("langgraph_node") != MODEL_NODE or not isinstance(chunk, AIMessage):
                         continue
-                    for m in update.get("messages") or []:
-                        if isinstance(m, AIMessage | ToolMessage):
-                            turn.append(m)
-                        if isinstance(m, ToolMessage):
-                            call, why = _calls(turn).get(m.tool_call_id, ({}, ""))
-                            yield "step", trace_entry(call, why, m)
+                    for name in _tool_names(chunk):
+                        yield "phase", PHASES.get(name, DEFAULT_PHASE)
+                    if text := _text(chunk.content):
+                        yield "token", text
+                else:  # "updates": {node: state update}; collect this turn's messages
+                    for node, update in data.items():
+                        if node not in TURN_NODES or not isinstance(update, dict):
+                            continue
+                        for m in update.get("messages") or []:
+                            if isinstance(m, AIMessage | ToolMessage):
+                                turn.append(m)
+                            if isinstance(m, ToolMessage):
+                                call, why = _calls(turn).get(m.tool_call_id, ({}, ""))
+                                yield "step", trace_entry(call, why, m)
+            if not auto or (step := auto_next(session_id, seen)) is None:
+                break
+            nudge, seen = step
+            log.info("accept-all: running again session=%s open=%d", session_id, seen[0])
+            yield "phase", f"Carrying on: {seen[0]} left to settle…" if seen[0] else "Checking the story…"
+            message = HumanMessage(content=nudge)
 
     answer, citations, trace, refs = read_turn(turn)
     results = [
@@ -401,14 +450,17 @@ async def stream(
     session_id: str,
     question: str,
     *,
+    auto: bool = False,
     llm: BaseChatModel | None = None,
     checkpointer: Checkpointer = ...,
 ) -> AsyncIterator[tuple[str, Any]]:
     """`_stream`, with a log line when a message arrives, when the reply is ready and if it fails."""
-    log.info("message received session=%s book=%s chars=%d", session_id, book_id, len(question))
+    log.info("message received session=%s book=%s chars=%d auto=%s", session_id, book_id,
+             len(question), auto)
     started = time.perf_counter()
     try:
-        async for kind, value in _stream(book_id, session_id, question, llm=llm, checkpointer=checkpointer):
+        async for kind, value in _stream(book_id, session_id, question, auto=auto, llm=llm,
+                                         checkpointer=checkpointer):
             if kind == "done":
                 log.info(
                     "reply ready session=%s in %.1fs tool_calls=%d citations=%d chars=%d route=%s",

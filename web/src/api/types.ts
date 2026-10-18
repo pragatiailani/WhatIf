@@ -118,15 +118,6 @@ export interface Storyline {
   updated_at: string;
 }
 
-export interface Checkpoint {
-  id: string;
-  storyline_id: string;
-  name: string;
-  op_seq: number;
-  auto: boolean;
-  created_at: string;
-}
-
 // --- Chat ----------------------------------------------------------------
 
 export type Route = "local" | "global" | "canon" | "edit";

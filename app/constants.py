@@ -166,6 +166,9 @@ RETRIEVE_PASSAGE_CHARS = 1500  # retrieve: text per passage; get_chunks has the 
 DEFAULT_CHAT_HISTORY_BUDGET = 6000  # tokens of conversation before older turns are summarised
 HISTORY_KEEP_MESSAGES = 6  # most recent messages kept verbatim when summarising
 MAX_MODEL_CALLS = 80  # model calls per message (tool loop bound); a draft queue needs many
+# Accept-all mode: extra agent runs per message while a draft still has work left. Each run gets
+# MAX_MODEL_CALLS; the loop also stops as soon as a run makes no progress.
+AUTO_MAX_ROUNDS = 10
 MAX_CITATIONS = 8
 CITATION_QUOTE_CHARS = 240  # excerpt shown with each citation
 TRACE_FOUND_NAMES = 4  # names listed per kind in a trace step's "found" line
@@ -187,7 +190,21 @@ INKITT_AGENT_TOOLS = frozenset(
     }
 )  # fmt: skip
 INKITT_SUMMARY_CHARS = 2205
+# Every story sent to Inkitt gets the same What If cover. Inkitt fetches covers by public URL only,
+# so this default is `assets/whatif-cover.png` as GitHub serves it from main (it 404s until the file
+# is on main). `INKITT_COVER_URL` in .env points it anywhere else.
+INKITT_COVER_URL = "https://raw.githubusercontent.com/pragatiailani/WhatIf/main/assets/whatif-cover.png"
+# Inkitt's main genres (shortnames, from its `get_settings`). The model picks one; an unknown one
+# falls back to "other".
+INKITT_GENRES = (
+    "action", "adventure", "drama", "erotica", "fantasy", "historical-fiction", "horror", "humor",
+    "lgbtq", "literary-fiction", "mystery", "other", "poetry", "romance", "scifi", "thriller",
+    "young-adult",
+)
 INKITT_CHAPTER_NAME_CHARS = 200
+# Longest chapter text sent in one request. Inkitt refuses a whole novel in one chapter (HTTP 413),
+# so longer chapters go up in parts of about 5,000 words.
+INKITT_CHAPTER_CHARS = 30_000
 TITLE_CHARS = 60
 
 # --- Storylines ------------------------------------------------------------------

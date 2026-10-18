@@ -577,6 +577,21 @@ def test_search_finds_rewritten_text_instead_of_the_original(world):
     assert "superseded" in stale["results"][0]  # Chapter 2 changed but has no passage yet
 
 
+def test_retrieve_answers_from_the_storyline_not_canon(world):
+    from app.mcp_server import rag_tools
+
+    world.start()
+    finish_all(world)
+    tools.generate_passage(world.book, world.session, "Chapter 3")
+    hit = rag_tools.retrieve(world.book, "vigil", session_id=world.session)
+    assert hit["passages"][0]["chapter"] == "Chapter 3" and "vigil" in hit["passages"][0]["text"]
+    assert "superseded" not in hit["passages"][0]
+    funeral = rag_tools.retrieve(world.book, "funeral", session_id=world.session)
+    assert all("funeral" not in p["text"] for p in funeral["passages"])  # the original text is gone
+    canon = rag_tools.retrieve(world.book, "funeral")
+    assert any("funeral" in p["text"] for p in canon["passages"])
+
+
 def test_discard_drops_passages_written_in_the_draft(world):
     world.start()
     finish_all(world)

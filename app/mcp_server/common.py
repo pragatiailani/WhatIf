@@ -5,6 +5,12 @@ from app.mcp_server.matching import resolve_entity
 from app.repo import GraphScope, books, graph, sessions, storylines
 from app.repo.models import GraphEntity, GraphRelation, Storyline
 
+# Community summaries are built once from the original book; a storyline's changes are not in them.
+CANON_SUMMARIES_NOTE = (
+    "These summaries describe the original book, not this chat's storyline. Where the storyline "
+    "changed the story, answer from get_timeline, get_chapter_summary and read_chapter instead."
+)
+
 
 def session_storyline(book_id: str, session_id: str | None) -> Storyline | None:
     """The storyline the session is working in, or None for canon. Raises on an unknown book or

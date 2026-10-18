@@ -9,12 +9,11 @@ import { useAuth } from "../auth/AuthContext";
 import { BookCover } from "../components/BookCover";
 import { useIngestion } from "../lib/ingestion";
 import { Skeleton } from "../components/Loaders";
-import { StorylineCard, useFork } from "../components/StorylineCard";
+import { StorylineCard } from "../components/StorylineCard";
 import { Badge, Button, Empty, Page } from "../components/ui";
 
 export default function Shelf() {
   const { user } = useAuth();
-  const { fork, overlay } = useFork();
   const [lines, setLines] = useState<Storyline[] | null>(null);
   const [uploads, setUploads] = useState<Book[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
@@ -33,7 +32,6 @@ export default function Shelf() {
 
   return (
     <Page>
-      {overlay}
       <header className="mb-10 flex flex-wrap items-end gap-6">
         <div className="grid size-16 place-items-center rounded-2xl border border-gold/40 bg-gold-soft font-display text-3xl text-gold">{user!.name.charAt(0)}</div>
         <div className="flex-1">
@@ -59,7 +57,7 @@ export default function Shelf() {
         </Empty>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {lines.map((s, i) => <StorylineCard key={s.id} s={s} index={i} bookTitle={titles[s.book_id]} onFork={fork} />)}
+          {lines.map((s, i) => <StorylineCard key={s.id} s={s} index={i} bookTitle={titles[s.book_id]} />)}
         </div>
       )}
 

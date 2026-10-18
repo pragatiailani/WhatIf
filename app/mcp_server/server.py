@@ -112,11 +112,14 @@ def get_relations(
 
 
 @tool()
-def search_communities(book_id: str, query: str, limit: int = 5) -> dict[str, Any]:
+def search_communities(
+    book_id: str, query: str, limit: int = 5, session_id: str | None = None
+) -> dict[str, Any]:
     """Summaries of the book's groups of connected characters, places and things most relevant
     to `query`, by keyword and meaning; level 1 is an overview of the whole book. Use for
-    big-picture questions (themes, factions, overall plot) rather than specific facts."""
-    return graph_tools.search_communities(book_id, query, limit)
+    big-picture questions (themes, factions, overall plot) rather than specific facts. They
+    describe the original book: in a what-if chat, check changed parts with the timeline."""
+    return graph_tools.search_communities(book_id, query, limit, session_id)
 
 
 # --- text tools ----------------------------------------------------------
