@@ -206,7 +206,7 @@ async def test_stream_ignores_messages_resent_by_middleware(env, monkeypatch):
                               {"messages": [old_call, old_result, now_call, now_result]}}
             yield "updates", {"model": {"messages": [AIMessage(content="Done.")]}}
 
-    monkeypatch.setattr(book_qa, "build_agent", lambda *_: Agent())
+    monkeypatch.setattr(book_qa, "build_agent", lambda *_, **__: Agent())
     events = [e async for e in book_qa.stream("book1", s.id, "Why?", llm=fake(), checkpointer=None)]
     assert [t["tool"] for t in events[-1][1]["trace"]] == ["get_chunks"]
     assert [v["tool"] for k, v in events if k == "step"] == ["get_chunks"]

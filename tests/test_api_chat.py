@@ -42,7 +42,7 @@ def test_chat_flow(client):
 
     reply = client.post(f"/sessions/{sid}/chat", json={"question": "Why did Ravi leave?"})
     assert reply.json() == {"answer": "A debt.", "citations": [{"chunk_id": "c1"}],
-                            "trace": [{"tool": "get_chunks"}], "actions": []}
+                            "trace": [{"tool": "get_chunks"}], "actions": [], "memory_updates": []}
     assert client.asked == [(book.id, sid, "Why did Ravi leave?")]
 
     sessions.add_message(Message(session_id=sid, role="user", content="hi"))

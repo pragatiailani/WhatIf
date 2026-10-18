@@ -315,3 +315,22 @@ All backend logs go to stderr (and to `LOG_FILE` if set) in one format:
 - **Ingestion, merge, storylines, agent:** stage changes, counts and timings (`app.ingestion`, `app.merge.*`, `app.storyline.*`, `app.agents.book_qa`), plus a line per agent tool call (`app.agent.tools`) and per model call with tokens (`app.llm`).
 - **Tool server:** runs as its own process and logs to stderr, which shows up in the API's console; it records tracebacks for crashes (`app.mcp`).
 - **Never logged:** passwords, tokens, API keys, emails, prompts or book text. Long argument values are clipped.
+
+## Cross-session user memory
+
+Signed-in users can retain explicit preferences and useful context across chat sessions. Memories
+are stored in MongoDB's `user_memories` collection and loaded into the book Q&A prompt before each
+turn. After the normal answer is generated, the LLM is called with a structured output schema to
+return a separate memory delta (`add`, `reinforce`, `replace`, or `forget`). The backend validates
+that delta and applies it best-effort; memory extraction failures do not fail the chat response.
+The chat response returns `memory_updates` separately from `answer`. Anonymous sessions do not
+persist user memories.
+
+Both explicit signals and behavioral patterns are supported. Explicit preferences become active
+immediately. Inferred preferences are stored as pending and only become active after repeated
+supporting evidence (at least two observations and confidence of at least 0.75). Pending memories
+are never injected into the answer prompt. Memories can be global, book-scoped, or storyline-scoped.
+
+Authenticated endpoints (send the normal `Authorization: Bearer <token>` header):
+
+- `GET /me/memories` — list active memories.

@@ -38,6 +38,25 @@ class User(_Doc):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class UserMemory(_Doc):
+    """A persistent preference or useful user context shared across chat sessions."""
+
+    user_id: str
+    type: Literal["preference", "fact"]
+    key: str
+    value: str
+    scope_type: Literal["global", "book", "storyline"] = "global"
+    book_id: str | None = None
+    storyline_id: str | None = None
+    source: Literal["explicit", "inferred"] = "inferred"
+    confidence: float = 0.7
+    evidence_count: int = 1
+    status: Literal["pending", "active", "superseded", "deleted"] = "active"
+    last_session_id: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 BookStatus = Literal["queued", "parsing", "extracting", "merging", "indexing", "ready", "failed"]
 Visibility = Literal["public", "private"]
 
