@@ -23,9 +23,16 @@ and an AI agent reads and edits that graph on your behalf.
   <img alt="React" src="https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black"/>
 </p>
 
-[The problem](#the-problem) &#183; [What WhatIf does](#what-whatif-does) &#183; [Architecture](#architecture) &#183; [Run it](#run-it-locally)
+**[▶ Watch the demo](https://youtu.be/vSfYoqRjHH8)** &#183; **[Read the blog post](https://medium.com/@pragati_aliani/what-if-voldemort-never-died-building-whatif-an-app-that-rewrites-books-43c60857e659)**
+
+[The problem](#the-problem) &#183; [What WhatIf does](#what-whatif-does) &#183; [Architecture](#architecture) &#183; [Graph data model](#graph-data-model) &#183; [Cypher & algorithms](#cypher-queries-and-graph-algorithms) &#183; [Run it](#run-it-locally)
 
 </div>
+
+## Demo
+
+- **Video walkthrough:** https://youtu.be/vSfYoqRjHH8
+- **Blog post:** [What if Voldemort never died? Building WhatIf, an app that rewrites books](https://medium.com/@pragati_aliani/what-if-voldemort-never-died-building-whatif-an-app-that-rewrites-books-43c60857e659)
 
 ---
 
@@ -178,6 +185,171 @@ your message whether to look something up or to start rewriting.
 
 ---
 
+## Graph data model
+
+Each book is its own FalkorDB graph, named `book_{book_id}`. Canon and every storyline of that book
+live in the same graph; storyline items are told apart by a `sid` property (see
+[storyline scoping](#storyline-scoping) below).
+
+```mermaid
+graph LR
+    A["(:Entity:Character)"] -- "REL {rel, weight, story_pos}" --> B["(:Entity:Character)"]
+    EV["(:Event)"] -- "INVOLVES {role}" --> A
+    EV -- AT --> P["(:Entity:Place)"]
+    EV -- BEFORE --> EV2["(:Event)"]
+    EV -- IN_CHAPTER --> CH["(:Chapter)"]
+    A -- IN_COMMUNITY --> CO["(:Community)"]
+```
+
+### Nodes
+
+| Label | Properties | Notes |
+|---|---|---|
+| `:Entity:<Type>` | `key`, `name`, `type`, `aliases`, `description`, `first_page`, `last_page`, `mention_count`, `community_id` | `<Type>` is one of `Character`, `Place`, `Organization`, `Group`, `Object`, `Concept`, added as a second label. Indexed on `key`. |
+| `:Event` | `key`, `summary`, `story_pos`, `story_time`, `chapter`, `first_page` | `story_pos` is a float giving narrative order, so new storyline events can slot between canon ones. Indexed on `key`. |
+| `:Chapter` | `title` | One per chapter found while parsing. |
+| `:Community` | `cid`, `title` | One per detected group; its LLM summary is stored in MongoDB. |
+
+### Relationships
+
+| Pattern | Properties | Built by |
+|---|---|---|
+| `(:Entity)-[:REL]->(:Entity)` | `id`, `rel`, `description`, `weight`, `story_pos` | The LLM, during extraction. `rel` comes from a fixed vocabulary of 34 types (`FRIEND_OF`, `ENEMY_OF`, `PARENT_OF`, `LOVES`, `KILLS`, `BETRAYS`, `LIVES_IN`, ...); anything else becomes `OTHER`. |
+| `(:Event)-[:INVOLVES]->(:Entity)` | `role` | Code, from each event's participants. |
+| `(:Event)-[:AT]->(:Entity)` | | Code, from the event's place. |
+| `(:Event)-[:BEFORE]->(:Event)` | | Code: a chain through all events in `story_pos` order. |
+| `(:Event)-[:IN_CHAPTER]->(:Chapter)` | | Code, from the event's chapter. |
+| `(:Entity)-[:IN_COMMUNITY]->(:Community)` | | Community detection (below). |
+
+Story relations are kept as one `REL` type with a `rel` property rather than 34 edge types, so a
+single pattern (`-[r:REL]-`) walks every kind of relation and `r.rel IN $types` narrows it.
+
+### Storyline scoping
+
+Every node and `REL` edge may also carry `sid` (the storyline that created it) and `created_by_op`
+(the op number). Canon items have no `sid` and are never modified. What a storyline *removes* is
+not deleted from the graph: it goes into per-storyline hidden sets of node keys and edge ids, kept
+in MongoDB with the op log.
+
+### What lives in MongoDB instead
+
+FalkorDB holds only the graph the agent queries. MongoDB holds: books and their page
+chunks, evidence quotes and mentions (each fact's page and offset), the merge tree checkpoints
+(`graph_levels`, from which the graph can be republished at any time), community summaries,
+embedding vectors, storylines and their op logs, chat sessions, messages and users.
+
+---
+
+## Cypher queries and graph algorithms
+
+All graph access goes through `app/repo/graph.py`. Reads use `ro_query`; every query is
+parameterised, and the only interpolated text is labels and predicates built from constants.
+
+### The visibility filter
+
+Every read includes this predicate for each node and edge alias it matches, so a reader can only
+ever see canon plus their own storyline:
+
+```cypher
+-- canon
+n.sid IS NULL
+
+-- inside a storyline
+(n.sid IS NULL OR (n.sid = $sid AND n.created_by_op <= $max_op))
+  AND NOT (coalesce(n.key, '') IN $hidden_nodes)
+  AND NOT (coalesce(n.id, '')  IN $hidden_edges)
+```
+
+`$max_op` lets a draft leave out ops that are not committed yet.
+
+### Writing the graph (publish)
+
+Ingestion writes the merged book graph in batches with `UNWIND` + `MERGE`, so publishing is
+idempotent and safe to rerun:
+
+```cypher
+CREATE INDEX FOR (n:Entity) ON (n.key)
+CREATE INDEX FOR (n:Event) ON (n.key)
+
+UNWIND $rows AS row
+MERGE (n:Entity:Character {key: row.key})
+SET n += row
+
+UNWIND $rows AS row
+MATCH (a:Entity {key: row.src}), (b:Entity {key: row.dst})
+MERGE (a)-[r:REL {id: row.id}]->(b)
+SET r.rel = row.rel, r.description = row.description, r.weight = row.weight,
+    r.story_pos = row.story_pos, r.sid = row.sid, r.created_by_op = row.created_by_op
+
+UNWIND $rows AS row
+MATCH (e:Event {key: row.event}), (n:Entity {key: row.entity})
+MERGE (e)-[r:INVOLVES]->(n)
+SET r.role = row.role
+
+UNWIND $rows AS row
+MATCH (e:Event {key: row.event})
+MERGE (c:Chapter {title: row.chapter})
+MERGE (e)-[:IN_CHAPTER]->(c)
+```
+
+`AT` and `BEFORE` edges are written the same way.
+
+### Reads the agent's tools depend on
+
+| Query | Used for |
+|---|---|
+| One hop over `REL`, both directions, strongest first | `get_neighbors`, and each level of `find_path` |
+| An entity's events with its role, in narrative order | "What does X do?", character arcs |
+| Events and relations after a point that involve given entities | The storyline ripple |
+| Name, aliases and mention count of every entity | Fuzzy name matching in `find_entities` |
+| Events of one chapter with their participants | Chapter questions, prose rewriting |
+| The whole visible graph | The graph view in the web app |
+
+```cypher
+-- expand: one hop out of a set of entities
+MATCH (n:Entity)-[r:REL]-(m:Entity)
+WHERE n.key IN $keys AND r.rel IN $rel_types AND <visible n, r, m>
+RETURN n.key, properties(r), startNode(r).key, endNode(r).key, properties(m)
+ORDER BY r.weight DESC
+
+-- entity_events: what a character does, in story order
+MATCH (e:Event)-[i:INVOLVES]->(n:Entity {key: $key})
+WHERE <visible e, n>
+RETURN properties(e), i.role ORDER BY e.story_pos
+
+-- events_involving: every later event a change could affect (the ripple)
+MATCH (e:Event)-[:INVOLVES]->(n:Entity)
+WHERE n.key IN $keys AND e.story_pos >= $pos_from AND <visible e, n>
+RETURN properties(e), collect(n.key), e.story_pos AS pos ORDER BY pos
+
+-- relations_involving: every later relation touching the changed characters
+MATCH (a:Entity)-[r:REL]->(b:Entity)
+WHERE (a.key IN $keys OR b.key IN $keys) AND r.story_pos >= $pos_from
+  AND <visible a, r, b>
+RETURN properties(r), a.key, b.key ORDER BY r.story_pos
+```
+
+Storyline writes reuse the publish queries with `sid` and `created_by_op` set. Undoing ops removes
+only that storyline's newer items, never canon:
+
+```cypher
+MATCH ()-[r:REL]->() WHERE r.sid = $sid AND r.created_by_op > $op DELETE r
+MATCH (n) WHERE n.sid = $sid AND n.created_by_op > $op DETACH DELETE n
+```
+
+### Graph algorithms
+
+| Algorithm | Where | How |
+|---|---|---|
+| **Shortest path (BFS)** | `find_path` tool (`app/mcp_server/graph_tools.py`) | Breadth-first search over `REL` edges ignoring direction, up to 6 hops. Each level is one batched `expand` query (100 keys per query, at most 200 nodes per level), and the path is rebuilt from parent pointers. It answers "how are A and B connected?". |
+| **k-hop neighbourhood** | `get_neighbors` tool | The same `expand` query repeated for up to 2 hops, skipping nodes already seen. |
+| **Community detection (Leiden)** | `app/communities/detect.py` | Builds a weighted, undirected entity graph: each `REL` adds its `weight`, and each event adds 0.5 between every pair of its participants, so characters who keep appearing together group up even with no named relation. NetworkX's Leiden algorithm (modularity, fixed seed) splits it into groups; groups under 3 members are dropped and at most 40 are kept. Each group gets an LLM summary for big-picture questions and is written back as `Community` nodes and `IN_COMMUNITY` edges. |
+| **Tree merge with entity resolution** | `app/merge/` | Page graphs merge pairwise up a binary tree. Duplicate candidates come from shared names and aliases, name similarity (≥ 0.75) and embedding similarity (≥ 0.85); clear cases merge in code and only ambiguous pairs go to a batched LLM judge. Events are compared only near the boundary between the two halves. |
+| **Hybrid retrieval (cosine + RRF)** | `app/retrieval.py` | Chunks, entities, events and community summaries are embedded; search ranks them by cosine similarity and combines that with keyword or name matches using reciprocal rank fusion (`score = Σ 1 / (60 + rank)`), which needs no calibration between the two scores. |
+| **Ripple and continuity checks** | `app/storyline/` | A change queues everything `events_involving` / `relations_involving` return from the divergence point. Before commit, code checks run over the scoped graph (for example, nobody acts in an event after being recorded dead, and no `KILLS` edge targets someone the storyline keeps alive), followed by an LLM continuity check per touched chapter. |
+
+---
+
 ## Project layout
 
 ```
@@ -211,7 +383,7 @@ docs/images/      Architecture diagrams (SVG + PNG)
 ### 1. Configure
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/pragatiailani/WhatIf.git
 cd WhatIf
 cp .env.example .env
 ```
@@ -287,6 +459,15 @@ uv run python -m app.mcp_server streamable-http
 # Tests
 uv run pytest
 ```
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `required variable FALKOR_PASSWORD is missing a value` | Compose refuses to start FalkorDB without a password. Set `FALKOR_PASSWORD` in `.env`. |
+| `ports are not available: exposing port TCP 127.0.0.1:6379` (or `27017`) | Something else already uses the port: a local Redis or MongoDB service, or containers from another Docker engine (on Windows, a Docker Engine installed inside WSL alongside Docker Desktop). Stop it, then run `docker compose up -d` again. |
+| The browser reports a CORS error on an API call | CORS allows localhost by default; a missing CORS header usually means the request crashed with a 500. Check the API log. A common cause is `.env` disagreeing with the running FalkorDB (a password set on one side only). Restart the API after changing `.env`. |
+| The graph view or graph questions are empty | The book has no graph in FalkorDB yet. Check `GRAPH.LIST` in the FalkorDB browser for `book_{id}`. |
 
 ### More settings
 
