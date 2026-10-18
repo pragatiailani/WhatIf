@@ -36,6 +36,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.0",
     "langgraph-checkpoint-mongodb>=0.1.0",
     "cryptography>=42.0",
+    "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]

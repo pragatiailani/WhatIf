@@ -26,7 +26,11 @@ export interface Api {
   // auth
   signUp(name: string, email: string, password: string): Promise<Session>;
   signIn(email: string, password: string): Promise<Session>;
-  me(token: string): Promise<User>;
+  /** Trades the refresh cookie for a new session; rejects when there is no valid one. */
+  refresh(): Promise<Session>;
+  /** Ends the session on the server. */
+  signOut(): Promise<void>;
+  me(): Promise<User>;
   /** Saves the user's Inkitt access token after Inkitt accepts it. */
   setInkittToken(token: string): Promise<User>;
   clearInkittToken(): Promise<User>;

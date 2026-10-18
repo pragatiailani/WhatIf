@@ -3,8 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { api } from "../api/client";
 import type { User } from "../api/types";
 import { PageLoader } from "../components/Loaders";
-
-const TOKEN_KEY = "whatif.token";
+import { onSessionLost, setAccessToken } from "./token";
 
 interface AuthState {
   user: User | null;
@@ -20,14 +19,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
 
+  // The access token is only in memory, so on load the refresh cookie restores the session.
   useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (!token) return setReady(true);
     api
-      .me(token)
-      .then(setUser)
-      .catch(() => localStorage.removeItem(TOKEN_KEY))
+      .refresh()
+      .then((s) => {
+        setAccessToken(s.token);
+        setUser(s.user);
+      })
+      .catch(() => {})
       .finally(() => setReady(true));
+    // If a later request can't renew the session, drop to signed out; RequireAuth then redirects.
+    return onSessionLost(() => setUser(null));
   }, []);
 
   const value: AuthState = {
@@ -35,17 +38,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ready,
     async signIn(email, password) {
       const s = await api.signIn(email, password);
-      localStorage.setItem(TOKEN_KEY, s.token);
+      setAccessToken(s.token);
       setUser(s.user);
     },
     async signUp(name, email, password) {
       const s = await api.signUp(name, email, password);
-      localStorage.setItem(TOKEN_KEY, s.token);
+      setAccessToken(s.token);
       setUser(s.user);
     },
     signOut() {
-      localStorage.removeItem(TOKEN_KEY);
+      setAccessToken(null);
       setUser(null);
+      void api.signOut();
     },
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

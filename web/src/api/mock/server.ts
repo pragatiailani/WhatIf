@@ -130,6 +130,7 @@ async function hash(s: string) {
 function session(u: Db["users"][number]) {
   const token = id() + id();
   db.sessions[token] = u.id;
+  localStorage.setItem(TOKEN_KEY, token); // the mock has no cookies: it keeps its fake session here
   save();
   const { password: _pw, ...user } = u;
   return { token, user };
@@ -219,6 +220,16 @@ const impl: Api = {
     const u = db.users.find((x) => x.email === email.trim().toLowerCase());
     if (!u || u.password !== (await hash(password))) throw new Error("Email or password is incorrect.");
     return session(u);
+  },
+
+  async refresh() {
+    const u = db.users.find((x) => x.id === db.sessions[localStorage.getItem(TOKEN_KEY) ?? ""]);
+    if (!u) throw new Error("sign in required");
+    return session(u);
+  },
+
+  async signOut() {
+    localStorage.removeItem(TOKEN_KEY);
   },
 
   async me() {

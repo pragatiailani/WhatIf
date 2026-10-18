@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app import auth
 from app.api import chat
 from app.main import app
 from app.repo import books, sessions
@@ -18,7 +21,10 @@ def client(mongo, monkeypatch):
         return {"answer": "A debt.", "citations": [{"chunk_id": "c1"}], "trace": [{"tool": "get_chunks"}]}
 
     monkeypatch.setattr(chat, "get_agent", lambda name: type("A", (), {"run": staticmethod(run)}))
+    monkeypatch.setattr(auth, "get_settings", lambda: SimpleNamespace(auth_secret="test-secret"))
     with TestClient(app) as c:
+        body = {"name": "Ravi", "email": "ravi@example.com", "password": "secret-pass"}
+        c.headers["Authorization"] = f"Bearer {c.post('/auth/signup', json=body).json()['token']}"
         c.asked = asked
         yield c
 
